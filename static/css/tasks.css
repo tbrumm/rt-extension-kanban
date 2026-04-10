@@ -20,10 +20,14 @@
 
 /* ---------------------------------------------------------
    Lane column
+   Grows/shrinks to fill available width (few lanes → wide,
+   many lanes → narrow).  Horizontal scroll kicks in only
+   when every lane would drop below the minimum width.
    --------------------------------------------------------- */
 .column {
-  flex: 0 0 280px;
-  min-width: 280px;
+  flex: 1 1 220px;
+  min-width: 220px;
+  max-width: 480px;
 }
 
 .column .card {

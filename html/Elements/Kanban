@@ -23,6 +23,8 @@ var $ = jQuery;
   let advancedPriority = false;
   const currentUser = "<% $session{'CurrentUser'}->Name %>";
   let config = "";
+  let wsInstance = null;       // single shared WebSocket — prevents duplicates
+  let kanbanInitRunning = false; // guard against concurrent init calls
 
 //////////////////////TEMPLATES/////////////////////////
   const templateDropdownLink = doT.template(`
@@ -831,6 +833,11 @@ var $ = jQuery;
   let sequence = undefined;
 
   function initWebsockets() {
+    // ReconnectingWebSocket manages its own reconnect loop — only create it once.
+    // Subsequent kanbanInit() calls (HTMX re-swap, sequence-gap refresh) reuse
+    // the existing connection instead of closing and reopening it.
+    if (wsInstance) return;
+
     let path = location.protocol.replace('http', 'ws') + "//" + location.hostname;
 %if ($myPort != -1){
     path += ":<%$myPort%>";
@@ -841,49 +848,50 @@ var $ = jQuery;
 %}
     path += "<%RT->Config->Get('WebPath')%>" + "/websocket";
 
-    const ws = new ReconnectingWebSocket(path);
+    wsInstance = new ReconnectingWebSocket(path);
 
-    ws.onopen = function() {
+    wsInstance.onopen = function() {
       console.log('WebSocket connection opened');
-      $('#wsIndicator').removeClass('disconnected').addClass('connected').attr('title','WebSocket: connected');
-      setInterval(function() {
-        ws.send("Keep alive from client");
-      }, 200000);
+      syncWsIndicator();
     };
 
-    ws.onmessage = function(msg) {
-      const res = JSON.parse(msg.data).updateTicket;
+    wsInstance.onmessage = function(msg) {
+      let res;
+      try { res = JSON.parse(msg.data).updateTicket; } catch(e) { return; }
+      if (!res) return;
 
       if (!isNaN(res.sequence)) {
         if (sequence === undefined && res['id'] === undefined) {
+          // Initial sequence sync from server — no board refresh needed.
           sequence = res.sequence;
-        } else if (sequence !== res.sequence) {
+        } else if (res['id'] === undefined && sequence !== res.sequence) {
+          // Sequence gap detected (e.g. after reconnect) — full board refresh.
+          console.log('WebSocket: sequence gap, refreshing board');
           sequence = res.sequence;
-          ticketCache = {};
-          ticketViewCache = {};
-          autocompleteValues = [];
-          hidden = [];
-          filter = {};
-
-          Columns = config['lanes'];
-          $('#lanes').empty();
-          initColumns();
-          initView();
-          $('.filter').trigger('keyup');
+          kanbanInit();
+          return;
         }
       }
 
       if (res['id'] !== undefined && !isNaN(res.id)) {
-        console.log("WebSocket: update ticket " + res.id);
+        console.log('WebSocket: update ticket ' + res.id);
         getAndUpdateTicket(res.id);
         sequence++;
       }
     };
 
-    ws.onclose = function() {
-      $('#wsIndicator').removeClass('connected').addClass('disconnected').attr('title','WebSocket: disconnected');
+    wsInstance.onclose = function() {
       console.log('WebSocket connection closed');
+      syncWsIndicator();
     };
+  }
+
+  function syncWsIndicator() {
+    const connected = wsInstance && wsInstance.readyState === WebSocket.OPEN;
+    $('#wsIndicator')
+      .toggleClass('connected',    !!connected)
+      .toggleClass('disconnected', !connected)
+      .attr('title', connected ? 'WebSocket: connected' : 'WebSocket: disconnected');
   }
 
   // Define configurations before $(document).ready() to avoid TDZ issues
@@ -896,6 +904,10 @@ var $ = jQuery;
   };
 
   function kanbanInit() {
+    // Prevent a second concurrent init (e.g. WS sequence-gap re-init arriving
+    // while HTMX is still loading the board for the first time).
+    if (kanbanInitRunning) return;
+    kanbanInitRunning = true;
     try {
       // Reset all state — safe for repeated calls (HTMX re-init, page restore)
       ticketCache      = {};
@@ -919,8 +931,11 @@ var $ = jQuery;
       initView();
       $('.filter').trigger('keyup');
       initWebsockets();
+      syncWsIndicator();
     } catch(e) {
       console.error('RT-Kanban init error: ' + e.message, e);
+    } finally {
+      kanbanInitRunning = false;
     }
   }
 

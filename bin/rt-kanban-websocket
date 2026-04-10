@@ -25,6 +25,8 @@ use utf8;
 
 use Mojolicious::Lite;
 use Mojo::Redis;
+use Mojo::URL;
+use Mojo::Promise;
 use Mojo::JSON qw(encode_json);
 
 # -----------------------------------------------------------------------
@@ -48,7 +50,7 @@ my %debounce;     # ticket_id => Mojo::IOLoop timer id  (200 ms debounce)
 my $redis_url = $conf->{redis_url} // 'redis://localhost';
 my $channel   = $conf->{channel}   // 'rt-ticket-activity';
 
-my $redis = Mojo::Redis->new( url => $redis_url );
+my $redis = Mojo::Redis->new( url => Mojo::URL->new($redis_url) );
 
 $redis->on( error => sub {
     my ($self, $err) = @_;
@@ -91,7 +93,7 @@ $pubsub->listen( $channel => sub {
 app->log->info("Subscribed to Redis channel '$channel' at $redis_url");
 
 # -----------------------------------------------------------------------
-# Authentication helper
+# Authentication helper  (non-blocking, returns a Mojo::Promise)
 #
 # Validates the client's RT session cookie against the RT REST 2.0 API.
 #
@@ -99,8 +101,10 @@ app->log->info("Subscribed to Redis channel '$channel' at $redis_url");
 #   HTTP 403  → authenticated BUT no access to the probe ticket    → allow
 #   HTTP 401  → session invalid / expired                          → deny
 #   anything else / error                                          → deny
+#
+# Uses $ua->get_p (promise-based) so the Mojo event loop is never blocked.
 # -----------------------------------------------------------------------
-sub _check_rt_auth {
+sub _check_rt_auth_p {
     my ($req) = @_;
 
     my $rt_url    = $conf->{rt_url}    // 'http://localhost';
@@ -109,9 +113,17 @@ sub _check_rt_auth {
     my $probe_url = $conf->{auth_probe_url}
                     // "$rt_url/REST/2.0/ticket/1";
 
-    for my $cookie ( @{ $req->cookies } ) {
-        # RT session cookies are named RT_SID_<sitename>_<port>
-        next unless $cookie->name =~ /^RT_SID/i;
+    # Collect all RT session cookies upfront
+    my @cookies = grep { $_->name =~ /^RT_SID/i } @{ $req->cookies };
+
+    return Mojo::Promise->resolve(0) unless @cookies;
+
+    # Try each cookie in sequence via a recursive promise chain.
+    # NOTE: $ua must be captured in the then/catch closures to prevent Perl's
+    # garbage collector from destroying it before the async request completes.
+    my $try; $try = sub {
+        my $cookie = shift @cookies;
+        return Mojo::Promise->resolve(0) unless defined $cookie;
 
         my $ua = Mojo::UserAgent->new
             ->connect_timeout(3)
@@ -126,20 +138,23 @@ sub _check_rt_auth {
             )
         );
 
-        my $res = eval { $ua->get($probe_url)->result };
-        if ($@) {
-            app->log->error("Auth probe failed ($probe_url): $@");
-            next;
-        }
+        return $ua->get_p($probe_url)->then(sub {
+            my $tx   = shift;
+            my $code = $tx->result->code;
+            $ua;  # keep $ua alive until the callback fires
+            app->log->debug("Auth probe $probe_url → HTTP $code");
+            # 200 = authenticated + access; 403 = authenticated, no access to this ticket
+            return Mojo::Promise->resolve(1) if $code == 200 || $code == 403;
+            return $try->();
+        })->catch(sub {
+            my $err = shift;
+            $ua;  # keep $ua alive until the callback fires
+            app->log->error("Auth probe failed ($probe_url): $err");
+            return $try->();
+        });
+    };
 
-        my $code = $res->code;
-        app->log->debug("Auth probe $probe_url → HTTP $code");
-
-        # 200 = authenticated + access; 403 = authenticated, no access to this ticket
-        return 1 if $code == 200 || $code == 403;
-    }
-
-    return 0;
+    return $try->();
 }
 
 # -----------------------------------------------------------------------
@@ -159,29 +174,48 @@ websocket '/websocket' => sub {
                // $c->tx->remote_address
                // 'unknown';
 
-    unless ( _check_rt_auth($c->req) ) {
-        app->log->warn("Rejected unauthenticated WebSocket from $peer");
-        $c->rendered(401);
-        return;
-    }
-
-    my $id = "$c->{tx}";
-    $clients{$id} = $c->tx;
-    app->log->info(sprintf
-        'Client connected: %s  id=%s  total=%d',
-        $peer, $id, scalar(keys %clients)
-    );
-
-    # Send the current sequence number immediately so the client can
-    # detect whether it missed any events during a reconnect gap.
-    $c->send({ text => encode_json({ updateTicket => { sequence => $sequence } }) });
-
+    # Register $c->on(finish) SYNCHRONOUSLY before returning from this handler.
+    # Mojolicious closes a WebSocket as soon as the handler sub returns unless at
+    # least one event listener is registered on the transaction.  The async auth
+    # promise resolves later, so without this the connection is torn down before
+    # auth even completes (rapid connect/disconnect loop).
+    my $authenticated = 0;
     $c->on( finish => sub {
-        delete $clients{$id};
+        if ($authenticated) {
+            my $id = "$c->{tx}";
+            delete $clients{$id};
+            app->log->info(sprintf
+                'Client disconnected: %s  total=%d',
+                $peer, scalar(keys %clients)
+            );
+        }
+    });
+
+    _check_rt_auth_p($c->req)->then(sub {
+        my ($ok) = @_;
+
+        unless ($ok) {
+            app->log->warn("Rejected unauthenticated WebSocket from $peer");
+            $c->tx->finish(4401, 'Unauthorized');
+            return;
+        }
+
+        $authenticated = 1;
+        my $id = "$c->{tx}";
+        $clients{$id} = $c->tx;
         app->log->info(sprintf
-            'Client disconnected: %s  total=%d',
-            $peer, scalar(keys %clients)
+            'Client connected: %s  id=%s  total=%d',
+            $peer, $id, scalar(keys %clients)
         );
+
+        # Send the current sequence number immediately so the client can
+        # detect whether it missed any events during a reconnect gap.
+        $c->send({ text => encode_json({ updateTicket => { sequence => $sequence } }) });
+
+    })->catch(sub {
+        my $err = shift;
+        app->log->error("Auth error for $peer: $err");
+        $c->tx->finish(1011, 'Internal error');
     });
 };
 

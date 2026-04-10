@@ -10,6 +10,9 @@ Adds a Kanban board to [Request Tracker](https://bestpractical.com/request-track
 - Drag-and-drop ticket operations with automatic field updates
 - Powerful display filters with regular expression support
 - Highly configurable lanes with custom queries and drop actions
+- **Search-integrated view** — open any saved search as a Kanban board directly from the Feeds menu
+- **Queue-scoped owner dropdown** — only users who can own tickets in the relevant queue are listed
+- Lane width adapts to the number of lanes, making full use of available screen width
 - Fullscreen mode for large monitors
 - Bootstrap 5 / Dark Mode compatible UI (RT 6)
 
@@ -57,6 +60,8 @@ sudo systemctl restart apache2    # or nginx / your web server
 ### 4 — Add the Kanban element to a dashboard
 
 In RT → **Tools → Dashboard → Edit** add the **Kanban** element to any dashboard column.
+
+The Kanban board is also available directly from any ticket search: run a search, then open **Feeds → Kanban** in the search navigation to view the results as a Kanban board.
 
 ---
 
@@ -132,6 +137,22 @@ Set($KanbanReadOnly_alice, 1);
 ```perl
 Set($cutCreatorName, 12);   # default: 10
 ```
+
+---
+
+## Search-integrated Kanban view
+
+Any ticket search can be opened as a Kanban board. After running a search in RT, the navigation bar shows a **Feeds** menu — select **Kanban** to open the current search results as a board.
+
+The Kanban respects the active search query: each lane only shows tickets that match **both** the lane's own query and the search filter. Dragging a ticket between lanes still applies the lane's `Change` fields (e.g. updating Status or Owner) as usual.
+
+The lane configuration (columns, queries, drop actions) is the same as for the dashboard widget and is controlled via `%KanbanConfigs` in `RT_SiteConfig.pm`.
+
+### Queue-scoped owner dropdown
+
+When viewing tickets from a specific queue, the owner dropdown on each ticket card only lists users who have the `OwnTicket` right in that ticket's queue (including users with global rights). This avoids polluting the dropdown with users who cannot be assigned tickets in the relevant queue.
+
+No additional configuration is required — the filtering is automatic.
 
 ---
 

@@ -63,7 +63,7 @@ var $ = jQuery;
     <li id="{{=it.id}}" class="ticket">
       <div class="card shadow-sm border-0">
         <div class="ticket-id-bar">
-          <span class="badge bg-secondary">#{{=it.id}}</span>
+          <span class="badge text-bg-secondary">#{{=it.id}}</span>
           <div class="ticket-actions">
 % if (!$readOnly){
             <button onclick="showDropMerge(this, '{{=it.id}}')" class="btn btn-sm btn-outline-secondary">merge</button>
@@ -83,7 +83,7 @@ var $ = jQuery;
           </select>
 %}
         </div>
-        <div class="ticket-subject" style="background-color:{{=it.ColorBright}};">
+        <div class="ticket-subject">
           <a href="<%RT->Config->Get('WebPath')%>/Ticket/Display.html?id={{=it.id}}">{{=it.Subject}}</a>
         </div>
         <div class="ticket-footer">
@@ -673,11 +673,43 @@ var $ = jQuery;
     })(id);
   }
 
+  // Curated palette for owner colour bars.
+  // Colours are muted enough to work with white or near-white text and look
+  // at home alongside Bootstrap 5 / RT 6's blue-grey UI.
+  const _ownerPalette = [
+    '#3b6ea5', // RT blue
+    '#2e7d32', // forest green
+    '#6a1f70', // purple
+    '#c0392b', // brick red
+    '#d35400', // burnt orange
+    '#1a6b7a', // teal
+    '#5d6d7e', // slate
+    '#7b6f3a', // olive
+    '#1e6b4a', // dark emerald
+    '#7d3c98', // violet
+    '#b7770d', // amber
+    '#2c5f6e', // ocean
+  ];
+
+  function _ownerColor(ownerName) {
+    const idx = parseInt(md5(ownerName).substring(0, 6), 16) % _ownerPalette.length;
+    return _ownerPalette[idx];
+  }
+
+  // WCAG-style luminance check: returns '#fff' or '#212529' for readable contrast.
+  function _contrastColor(hexColor) {
+    const h = hexColor.replace('#', '');
+    const r = parseInt(h.substring(0, 2), 16) / 255;
+    const g = parseInt(h.substring(2, 4), 16) / 255;
+    const b = parseInt(h.substring(4, 6), 16) / 255;
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    return lum > 0.45 ? '#212529' : '#ffffff';
+  }
+
   function calcCustomTicketValues(ticket) {
     ticket['Priority'] = parseInt(ticket['Priority']);
-    ticket["Color"]        = "#" + intToRGB(parseInt("0x" + md5(ticket["Owner"]).substring(0, 8)));
-    ticket["ColorInverse"] = invertColor(ticket["Color"]);
-    ticket["ColorBright"]  = "#" + intToBrightRGB(parseInt("0x" + md5(ticket["Queue"]).substring(0, 8)));
+    ticket['Color']        = _ownerColor(ticket['Owner'] || 'Nobody');
+    ticket['ColorInverse'] = _contrastColor(ticket['Color']);
     ticket['TimeEstimated'] = parseInt(ticket['TimeEstimated']) || 0;
     ticket['hour']   = Math.floor(ticket['TimeEstimated'] / 60);
     ticket['minute'] = ticket['TimeEstimated'] % 60;

@@ -1,0 +1,282 @@
+#!/usr/bin/env perl
+# =============================================================================
+# rt-kanban-websocket — WebSocket push server for RT-Extension-KANBAN
+# =============================================================================
+#
+# Subscribes to a Redis pub/sub channel and broadcasts ticket-update events
+# to all authenticated WebSocket clients in real time.
+#
+# Requirements:
+#   Mojolicious >= 9.0   (cpan Mojolicious)
+#   Mojo::Redis  >= 3.27 (cpan Mojo::Redis)
+#
+# Quick start (development):
+#   MOJO_CONFIG=/opt/rt6/local/plugins/RT-Extension-KANBAN/etc/rt-kanban-websocket.conf \
+#     perl bin/rt-kanban-websocket daemon -l http://*:5000
+#
+# Production:
+#   MOJO_CONFIG=/etc/rt-kanban-websocket.conf \
+#     perl bin/rt-kanban-websocket daemon -m production -l http://*:5000
+#
+# =============================================================================
+use strict;
+use warnings;
+use utf8;
+
+use Mojolicious::Lite;
+use Mojo::Redis;
+use Mojo::JSON qw(encode_json);
+
+# -----------------------------------------------------------------------
+# Configuration  (loaded from MOJO_CONFIG env var or conventional paths)
+# -----------------------------------------------------------------------
+plugin 'Config';
+my $conf = app->config;
+
+app->log->level( $conf->{log_level} // 'info' );
+
+# -----------------------------------------------------------------------
+# Shared state
+# -----------------------------------------------------------------------
+my %clients;      # id  => Mojo::Transaction::WebSocket
+my $sequence = 0; # monotonic counter; clients use this to detect missed events
+my %debounce;     # ticket_id => Mojo::IOLoop timer id  (200 ms debounce)
+
+# -----------------------------------------------------------------------
+# Redis  — uses Mojo::Redis 3.x (replaces the deprecated Mojo::Redis2)
+# -----------------------------------------------------------------------
+my $redis_url = $conf->{redis_url} // 'redis://localhost';
+my $channel   = $conf->{channel}   // 'rt-ticket-activity';
+
+my $redis = Mojo::Redis->new( url => $redis_url );
+
+$redis->on( error => sub {
+    my ($self, $err) = @_;
+    app->log->error("Redis error: $err");
+});
+
+# Mojo::Redis 3.x reconnects the pubsub connection automatically.
+my $pubsub = $redis->pubsub;
+
+$pubsub->on( error => sub {
+    my ($self, $err) = @_;
+    app->log->error("Redis pubsub error: $err");
+});
+
+$pubsub->listen( $channel => sub {
+    my ($pub, $message) = @_;
+    return unless defined $message && length $message;
+
+    # Debounce: a single ticket Create/Update triggers several _Set calls
+    # internally.  Collapse all events for the same ticket ID within 200 ms
+    # into a single broadcast.
+    Mojo::IOLoop->remove( $debounce{$message} ) if $debounce{$message};
+
+    $debounce{$message} = Mojo::IOLoop->timer( 0.2 => sub {
+        delete $debounce{$message};
+
+        my $payload = encode_json({
+            updateTicket => { id => $message, sequence => $sequence }
+        });
+
+        app->log->debug(
+            "Broadcast: ticket=$message seq=$sequence clients=" . scalar(keys %clients)
+        );
+
+        $_->send({ text => $payload }) for values %clients;
+        $sequence++;
+    });
+});
+
+app->log->info("Subscribed to Redis channel '$channel' at $redis_url");
+
+# -----------------------------------------------------------------------
+# Authentication helper
+#
+# Validates the client's RT session cookie against the RT REST 2.0 API.
+#
+#   HTTP 200  → authenticated AND has access to the probe ticket  → allow
+#   HTTP 403  → authenticated BUT no access to the probe ticket    → allow
+#   HTTP 401  → session invalid / expired                          → deny
+#   anything else / error                                          → deny
+# -----------------------------------------------------------------------
+sub _check_rt_auth {
+    my ($req) = @_;
+
+    my $rt_url    = $conf->{rt_url}    // 'http://localhost';
+    my $rt_domain = $conf->{rt_domain} // 'localhost';
+    my $rt_path   = $conf->{rt_path}   // '/';
+    my $probe_url = $conf->{auth_probe_url}
+                    // "$rt_url/REST/2.0/ticket/1";
+
+    for my $cookie ( @{ $req->cookies } ) {
+        # RT session cookies are named RT_SID_<sitename>_<port>
+        next unless $cookie->name =~ /^RT_SID/i;
+
+        my $ua = Mojo::UserAgent->new
+            ->connect_timeout(3)
+            ->request_timeout(5);
+
+        $ua->cookie_jar->add(
+            Mojo::Cookie::Response->new(
+                name   => $cookie->name,
+                value  => $cookie->value,
+                domain => $rt_domain,
+                path   => $rt_path,
+            )
+        );
+
+        my $res = eval { $ua->get($probe_url)->result };
+        if ($@) {
+            app->log->error("Auth probe failed ($probe_url): $@");
+            next;
+        }
+
+        my $code = $res->code;
+        app->log->debug("Auth probe $probe_url → HTTP $code");
+
+        # 200 = authenticated + access; 403 = authenticated, no access to this ticket
+        return 1 if $code == 200 || $code == 403;
+    }
+
+    return 0;
+}
+
+# -----------------------------------------------------------------------
+# Routes
+# -----------------------------------------------------------------------
+
+# Debug / status page  (disable in production via reverse-proxy rules)
+get '/' => 'debug';
+
+# WebSocket endpoint
+websocket '/websocket' => sub {
+    my ($c) = @_;
+
+    $c->inactivity_timeout(600);   # 10-minute idle timeout
+
+    my $peer = $c->req->headers->header('X-Forwarded-For')
+               // $c->tx->remote_address
+               // 'unknown';
+
+    unless ( _check_rt_auth($c->req) ) {
+        app->log->warn("Rejected unauthenticated WebSocket from $peer");
+        $c->rendered(401);
+        return;
+    }
+
+    my $id = "$c->{tx}";
+    $clients{$id} = $c->tx;
+    app->log->info(sprintf
+        'Client connected: %s  id=%s  total=%d',
+        $peer, $id, scalar(keys %clients)
+    );
+
+    # Send the current sequence number immediately so the client can
+    # detect whether it missed any events during a reconnect gap.
+    $c->send({ text => encode_json({ updateTicket => { sequence => $sequence } }) });
+
+    $c->on( finish => sub {
+        delete $clients{$id};
+        app->log->info(sprintf
+            'Client disconnected: %s  total=%d',
+            $peer, scalar(keys %clients)
+        );
+    });
+};
+
+app->start;
+
+# -----------------------------------------------------------------------
+# Embedded templates
+# -----------------------------------------------------------------------
+__DATA__
+
+@@ debug.html.ep
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RT Kanban — WebSocket Debug</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body   { font-family: ui-monospace, monospace; background: #0d1117; color: #e6edf3;
+             margin: 0; padding: 1.5rem; }
+    h1     { font-size: 1.1rem; color: #58a6ff; margin: 0 0 1rem; }
+    .bar   { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap;
+             margin-bottom: .75rem; }
+    .dot   { width: 10px; height: 10px; border-radius: 50%;
+             background: #f85149; box-shadow: 0 0 6px #f85149; flex-shrink: 0; }
+    .dot.on{ background: #3fb950; box-shadow: 0 0 6px #3fb950; }
+    button { background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+             border-radius: 6px; padding: .3rem .75rem; cursor: pointer;
+             font-family: inherit; font-size: .85rem; }
+    button:hover { background: #30363d; }
+    #log   { width: 100%; height: 420px; background: #010409; color: #3fb950;
+             border: 1px solid #30363d; border-radius: 6px; padding: .6rem;
+             resize: vertical; font-size: .82rem; line-height: 1.5; }
+    #stats { font-size: .78rem; color: #8b949e; }
+  </style>
+</head>
+<body>
+  <h1>RT Kanban &mdash; WebSocket Debug Console</h1>
+  <div class="bar">
+    <span class="dot" id="dot"></span>
+    <span id="status">Connecting…</span>
+    <button onclick="disconnect()">Disconnect</button>
+    <button onclick="reconnect()">Reconnect</button>
+    <button onclick="document.getElementById('log').value=''; msgCount=0; update()">Clear</button>
+  </div>
+  <p id="stats">Messages received: <span id="cnt">0</span></p>
+  <textarea id="log" readonly></textarea>
+
+  <script>
+  var log = document.getElementById('log');
+  var dot = document.getElementById('dot');
+  var st  = document.getElementById('status');
+  var cnt = document.getElementById('cnt');
+  var msgCount = 0;
+  var ws;
+
+  function ts() {
+    return new Date().toISOString().replace('T',' ').replace('Z','');
+  }
+  function append(msg) {
+    log.value += ts() + '  ' + msg + '\n';
+    log.scrollTop = log.scrollHeight;
+  }
+  function update() { cnt.textContent = msgCount; }
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(proto + '://' + location.host + '/websocket');
+    ws.onopen    = function() {
+      dot.className = 'dot on';
+      st.textContent = 'Connected';
+      append('── connected ──');
+    };
+    ws.onclose   = function(e) {
+      dot.className = 'dot';
+      st.textContent = 'Disconnected (code ' + e.code + ')';
+      append('── disconnected ──');
+    };
+    ws.onerror   = function(e) { append('ERR  ' + JSON.stringify(e.type)); };
+    ws.onmessage = function(e) {
+      msgCount++;
+      update();
+      try {
+        var d = JSON.parse(e.data);
+        append('MSG  ' + JSON.stringify(d));
+      } catch(_) {
+        append('MSG  ' + e.data);
+      }
+    };
+  }
+  function disconnect() { if(ws) ws.close(); }
+  function reconnect()  { disconnect(); setTimeout(connect, 300); }
+
+  connect();
+  </script>
+</body>
+</html>

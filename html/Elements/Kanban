@@ -1,104 +1,108 @@
 <&|/Widgets/TitleBox, title => loc('Kanban')&>
 
-<script type="text/javascript" src="<%RT->Config->Get('WebPath')%>/static/js/jquery-1.9.1.min.js"></script>
-<script type="text/javascript" src="<%RT->Config->Get('WebPath')%>/static/js/jquery-ui.min.js"></script>
+<%perl>
+# jQuery 3.6 is already loaded by RT 6 — do NOT load jQuery 1.9.1 again.
+# jQuery UI is loaded via RT->AddJavaScript('jquery-ui.min.js') in KANBAN.pm.
+</%perl>
 
 <script>
-
+// Wrap everything in an IIFE so that let/const variables are function-scoped.
+// This prevents "Identifier already declared" errors when HTMX re-executes
+// this script during history navigation or partial page swaps.
+(function() {
+// RT 6 loads jQuery in noConflict mode — $ is not jQuery globally.
+var $ = jQuery;
 
 //////////////////////GLOBAL VARIABLES
-  var ticketCache = {}; // all known tickets are stored in here
-  var ticketViewCache = {}; //after removing ticket Views are stored in here 
-  var autocompleteValues = []; //all values for the autocompletion
-  var hidden = []; //indices of removed ticketViews
-  var filter = {}; //those filters are used to restrict the shown tickets even more
-  var Columns = []; 
-//  var ColumnLookup = {};
-  //Which priority should be set, be carefull before enabling this! 
-  //it uses the complete Integer range. 
-  var advancedPriority = false;
-  var currentUser = "<% $session{'CurrentUser'}->Name %>"; // the current user
-  var config = "";
+  let ticketCache = {};
+  let ticketViewCache = {};
+  let autocompleteValues = [];
+  let hidden = [];
+  let filter = {};
+  let Columns = [];
+  let advancedPriority = false;
+  const currentUser = "<% $session{'CurrentUser'}->Name %>";
+  let config = "";
+
 //////////////////////TEMPLATES/////////////////////////
-  var templateDropdownLink = doT.template(`
-    <div id="DropdownLink" class="dropdown-content">
-     <span>
-      <label for="dependsOn">Depends on </label>
-      <input id="dependsOn" class="auto" type="text"></input> </span>
+  const templateDropdownLink = doT.template(`
+    <div id="DropdownLink" class="kanban-dropdown">
+      <div class="fw-semibold small mb-2 text-primary border-bottom pb-1">Link ticket</div>
+      <label for="dependsOn">Depends on</label>
+      <input id="dependsOn" class="auto" type="text" placeholder="Ticket# ...">
       <label for="DependedOnBy">Depended on by</label>
-      <input id="DependedOnBy" class="auto"></input>
+      <input id="DependedOnBy" class="auto" placeholder="Ticket# ...">
       <label for="RefersTo">Refers to</label>
-      <input id="RefersTo" class="auto"></input>
-      <label for="ReferredToBy">Refers to by</label>
-      <input id="ReferredToBy" class="auto"></input>
+      <input id="RefersTo" class="auto" placeholder="Ticket# ...">
+      <label for="ReferredToBy">Referred to by</label>
+      <input id="ReferredToBy" class="auto" placeholder="Ticket# ...">
       <label for="HasMember">Children</label>
-      <input id="HasMember" class="auto"></input>
+      <input id="HasMember" class="auto" placeholder="Ticket# ...">
       <label for="MemberOf">Parents</label>
-      <input id="MemberOf" class="auto"></input>
+      <input id="MemberOf" class="auto" placeholder="Ticket# ...">
+      <div class="text-muted" style="font-size:0.7rem;margin-top:0.25rem">Press Enter to save · Esc to close</div>
     </div>
     `);
-  var templateDropdownMerge = doT.template(`
-    <div id="DropdownMerge" class="dropdown-content">
-      <label for="merge">merge into</label>
-      <input id="merge" class="auto"></input>
+
+  const templateDropdownMerge = doT.template(`
+    <div id="DropdownMerge" class="kanban-dropdown">
+      <div class="fw-semibold small mb-2 text-danger border-bottom pb-1">Merge ticket</div>
+      <label for="merge">Merge into ticket#</label>
+      <input id="merge" class="auto" placeholder="Ticket# ...">
+      <div class="text-muted" style="font-size:0.7rem;margin-top:0.25rem">Press Enter to merge · Esc to close</div>
     </div>
     `);
-  var templateTicket = doT.template(`
+
+  const templateTicket = doT.template(`
     <li id="{{=it.id}}" class="ticket">
-      <span class="task">
-        <span class="title-bar">{{=it.id}}
-          <span class="user" >
-            <span class = "dropdown">
+      <div class="card shadow-sm border-0">
+        <div class="ticket-id-bar">
+          <span class="badge bg-secondary">#{{=it.id}}</span>
+          <div class="ticket-actions">
 % if (!$readOnly){
-              <button onclick="showDropMerge(this, '{{=it.id}}')" class="dropbtn"> merge </button>
-              <button onclick="showDropLink(this, '{{=it.id}}')" class="dropbtn"> link </button>
+            <button onclick="showDropMerge(this, '{{=it.id}}')" class="btn btn-sm btn-outline-secondary">merge</button>
+            <button onclick="showDropLink(this, '{{=it.id}}')"  class="btn btn-sm btn-outline-primary">link</button>
 %}
-            </span>
-          </span>
-        </span>
+          </div>
+        </div>
+        <div class="ticket-owner-bar" style="background-color:{{=it.Color}}; color:{{=it.ColorInverse}};">
 % if ($readOnly){
-        <span class="title-bar" style="background-color: {{=it.Color}}"> 
-          <span style="float: right; background-color: {{=it.Color}}; Display: block">   {{=it.Owner}}</span> 
+          <span class="fw-semibold">{{=it.Owner}}</span>
 %}else{
-        <span class="title-bar" style="  height: 1.7em; Display: block;">
-          <select style="background-color: {{=it.Color}}; color:{{=it.ColorInverse}}; float: right; text-align: right" class="user" onchange="setOwner('{{=it.id}}', this)">
-              <option style='color:black;background-color:#DDD' value="Nobody">Nobody</option> 
+          <select onchange="setOwner('{{=it.id}}', this)" title="Owner">
+            <option value="Nobody">Nobody</option>
 % while ( my $user = $users->Next ) {
-    <option style='color:black;background-color:#DDD' value="<% $user->Name %>" 
-        {{? it.Owner == "<% $user->Name %>"}}
-            selected="selected"
-        {{?}}
-    ><% $user->Name %></option>
+            <option value="<% $user->Name %>" {{? it.Owner == "<% $user->Name %>"}}selected="selected"{{?}}><% $user->Name %></option>
 %}
           </select>
 %}
-        </span>
-        <span class="title" style="background-color: {{=it.ColorBright}}">
+        </div>
+        <div class="ticket-subject" style="background-color:{{=it.ColorBright}};">
           <a href="<%RT->Config->Get('WebPath')%>/Ticket/Display.html?id={{=it.id}}">{{=it.Subject}}</a>
-        </span>
-        <span class="footer">
+        </div>
+        <div class="ticket-footer">
           <span class="estimate">
 % if ($readOnly){
-  et: {{=it.hour}}h {{=it.minute}}m
-%} else{
-            et:
-            <input type="number" align="right" onchange="saveTimeHours('{{=it.id}}', this)" min='0' class="value numedit" value="{{=it.hour}}"></input>
-            h
-            <input type="number"  align="right" onchange="saveTimeMinutes('{{=it.id}}', this)" min='0' max='59' class="value numedit" value="{{=it.minute}}"></input>
-            m
+            {{=it.hour}}h&nbsp;{{=it.minute}}m
+%}else{
+            <input type="number" onchange="saveTimeHours('{{=it.id}}', this)"   min="0"           class="numedit" value="{{=it.hour}}">h
+            <input type="number" onchange="saveTimeMinutes('{{=it.id}}', this)" min="0" max="59"  class="numedit" value="{{=it.minute}}">m
 %}
           </span>
-          <span class="creator">Creator:
-            <span class="value">{{=it.Creator}}</span>
-          </span>
-        </span>
-      </span> 
+          <span class="text-truncate ms-2" title="Creator: {{=it.Creator}}">{{=it.Creator}}</span>
+        </div>
+      </div>
     </li>`);
 
-  var templateColumn = doT.template(`
+  const templateColumn = doT.template(`
       <div id="div{{=it.Id}}" class="column">
-        <h3>{{=it.Name}}</h3>
-        <ul id="{{=it.Id}}" class="wipDrop tasks ui-sortable" style="cursor: hand;"></ul>
+        <div class="card border-0 shadow-sm h-100">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <h6 class="mb-0">{{=it.Name}}</h6>
+            <span class="badge bg-white text-primary rounded-pill lane-count">0</span>
+          </div>
+          <ul id="{{=it.Id}}" class="wipDrop tasks ui-sortable"></ul>
+        </div>
       </div>
     `);
 ////////////////END TEMPLATES////////////////////
@@ -106,132 +110,105 @@
 
 /////////////////USERINPUT FOR SINGLE TICKETS///////////
 
-  //updates minutes
-  function saveTimeMinutes(userID, obj){
-      ticket = ticketCache[userID];
+  function saveTimeMinutes(userID, obj) {
+      const ticket = ticketCache[userID];
       ticket['minute'] = parseInt($(obj).val());
       saveTicketTime(ticket);
   }
-  //updates hours
-  function saveTimeHours(userID, obj){
-      ticket = ticketCache[userID];
+
+  function saveTimeHours(userID, obj) {
+      const ticket = ticketCache[userID];
       ticket['hour'] = parseInt($(obj).val());
       saveTicketTime(ticket);
   }
 
+  let timer = undefined;
+  let timerTicket = undefined;
 
-  var timer = undefined;
-  var timerTicket = undefined;
-  //recalculates TimeEstimated and send information to the server
-  function saveTicketTime(ticket){
-    ticket['TimeEstimated'] = ticket['minute'] + 60* ticket['hour'];
+  function saveTicketTime(ticket) {
+    ticket['TimeEstimated'] = ticket['minute'] + 60 * ticket['hour'];
 
-    var save = function(){
-      saveTicket(timerTicket['id'], 'TimeEstimated: ' + timerTicket['TimeEstimated']);
+    const save = function() {
+      saveTicket(timerTicket['id'], {TimeEstimated: timerTicket['TimeEstimated']});
       timerTicket = undefined;
-    }
-    if (timer != undefined){
+    };
+    if (timer !== undefined) {
       clearTimeout(timer);
     }
     timer = setTimeout(save, 1000);
-    if (timerTicket != undefined && timerTicket != ticket){
-      saveTicket(timerTicket['id'], 'TimeEstimated: ' + timerTicket['TimeEstimated']);
+    if (timerTicket !== undefined && timerTicket !== ticket) {
+      saveTicket(timerTicket['id'], {TimeEstimated: timerTicket['TimeEstimated']});
     }
     timerTicket = ticket;
   }
 
-
-
-
-  //sets the Owner of the ticket 
-  function setOwner(id, obj){
-      var ticket = ticketCache[id];
+  function setOwner(id, obj) {
+      const ticket = ticketCache[id];
       ticket['Owner'] = obj.options[obj.selectedIndex].value;
-      ticket["Color"] = "#" + intToRGB(parseInt("0x" + md5(ticket["Owner"]).substring(0,8)));
+      ticket["Color"] = "#" + intToRGB(parseInt("0x" + md5(ticket["Owner"]).substring(0, 8)));
       ticket["ColorInverse"] = invertColor(ticket["Color"]);
 
-      $(obj).css({'background-color':ticket["Color"],'color':ticket["ColorInverse"]});
+      $(obj).css({'background-color': ticket["Color"], 'color': ticket["ColorInverse"]});
 
-      var dataStr = "Owner: " + obj.options[obj.selectedIndex].value;
-      //update Ticket
-      saveTicket(id, dataStr);
+      saveTicket(id, {Owner: obj.options[obj.selectedIndex].value});
   }
 
   const SHIFT = 135;
-  //Updates Priority and Status
-  function updatePS(id, LaneObject, Lane, shift, laneID){
-    var ticket = ticketCache[id];
+
+  function updatePS(id, LaneObject, Lane, shift, laneID) {
+    const ticket = ticketCache[id];
     ticket.lane = laneID;
-    var ticketField = $("#"+id);
-    var nextTicket = ticketCache[ticketField.next().attr('id')];
+    const ticketField = $("#" + id);
+    const nextTicket = ticketCache[ticketField.next().attr('id')];
 
-    if (advancedPriority){
-      //Completly autark priority management
-      //Tickets are inserted at exactly the possition it was dropped therefore
-      //Tickets are garanted to have a unique priority within their current state
-      //Tickets are garanted to have a higher priority than all tickets below them
-      //Tickets are garanted to have a lower priority than all tickets above them
-      var prevTicket = ticketCache[ticketField.prev().attr  ('id')];
-      var nextPriority = -2147483648;
-      var prevPriority = 2147483647;
+    if (advancedPriority) {
+      const prevTicket = ticketCache[ticketField.prev().attr('id')];
+      let nextPriority = -2147483648;
+      let prevPriority = 2147483647;
 
-      //get prev/next Priority
-      if (typeof nextTicket != 'undefined'){
+      if (typeof nextTicket !== 'undefined') {
           nextPriority = parseInt(nextTicket['Priority']);
       }
-      if (typeof prevTicket != 'undefined'){
+      if (typeof prevTicket !== 'undefined') {
           prevPriority = parseInt(prevTicket['Priority']);
       }
-      var divPriority = prevPriority - nextPriority;
-      //there is no int between prev- and next-Priority
-      if (divPriority <= 1){
-        if ((shift == '' && nextPriority > 0) || shift =='bottom') {
-            //shift bottom
-          ticket['Priority'] = prevPriority-SHIFT;
-          updatePS(nextTicket['id'], status, Lane, 'bottom', laneID);
-        }else{
-           // shift top
-          ticket['Priority'] = nextPriority+SHIFT;
-          updatePS(prevTicket['id'], status, Lane, 'top', laneID);
+      const divPriority = prevPriority - nextPriority;
+      if (divPriority <= 1) {
+        if ((shift === '' && nextPriority > 0) || shift === 'bottom') {
+          ticket['Priority'] = prevPriority - SHIFT;
+          updatePS(nextTicket['id'], LaneObject, Lane, 'bottom', laneID);
+        } else {
+          ticket['Priority'] = nextPriority + SHIFT;
+          updatePS(prevTicket['id'], LaneObject, Lane, 'top', laneID);
         }
-      }else{
-      //new Priority:
-        ticket['Priority'] = nextPriority + Math.round(divPriority/2);
+      } else {
+        ticket['Priority'] = nextPriority + Math.round(divPriority / 2);
       }
-    }else if (typeof nextTicket != 'undefined'){
-      //a way less strickt priority management.
-      //tickets are garanted to get a higher Priority than the ticket they where dropped before
-      //This means that the Position the ticket was dropped might not be the Possition the ticket
-      //Actually will be. Therefore the ticket might change its position imidiatly after beeing dropped.
-      if (ticket['Priority'] <= parseInt(nextTicket['Priority'])){
+    } else if (typeof nextTicket !== 'undefined') {
+      if (ticket['Priority'] <= parseInt(nextTicket['Priority'])) {
         ticket['Priority'] = parseInt(nextTicket['Priority']) + 1;
       }
     }
 
+    const change = LaneObject.Change;
+    const keys = Object.keys(change);
+    const fields = {Priority: ticket['Priority']};
 
-    var change = LaneObject.Change;
-    var keys = Object.keys(change);
-    var dataStr = "";
-
-    if ("CallOnEnter" in LaneObject){
-      var f = new Function("ticket", getQuery(LaneObject.CallOnEnter, LaneObject.timeOffSet));
-      var update = f(ticket);
-
-      for (var i = 0; i < update.length; i++){
-        dataStr += update[i] + ": " + ticket[update[i]] + "\n";
+    if ("CallOnEnter" in LaneObject) {
+      const f = new Function("ticket", getQuery(LaneObject.CallOnEnter, LaneObject.timeOffSet));
+      const update = f(ticket);
+      for (let i = 0; i < update.length; i++) {
+        fields[update[i]] = ticket[update[i]];
       }
     }
 
-    dataStr += "Priority: " + ticket['Priority']+"\n";
-
-    for (var i = 0; i < keys.length; i++){
+    for (let i = 0; i < keys.length; i++) {
       ticket[keys[i]] = getQuery(change[keys[i]]);
-      dataStr += keys[i] + ": " + getQuery(change[keys[i]], Columns[i].timeOffSet) + "\n";
-    }    
+      fields[keys[i]] = getQuery(change[keys[i]], Columns[laneID].timeOffSet);
+    }
 
-    //update Ticket
-    saveTicket(id, dataStr);
-    if (!advancedPriority){
+    saveTicket(id, fields);
+    if (!advancedPriority) {
       updateTicketPosition(ticket);
     }
   }
@@ -239,897 +216,803 @@
 
 //DROPDOWN
 
-// Close the dropdown menu if the user clicks outside of it
-//window.onclick = function(event) {
-//  if (!event.target.matches('.dropbtn')) {
-//    $('#DropdownLink').remove();
-//    $('#DropdownMerge').remove(); 
-//  }
-//}
-$(document).keyup(function(e) {
-  if (e.keyCode == 27) { 
-    closeAllDropDown();
-  }
-});
-var linkDropDownOpen = false;
+  $(document).on('keyup', function(e) {
+    if (e.keyCode === 27) {
+      closeAllDropDown();
+    }
+  });
 
-function closeAllDropDown(){  
+  let linkDropDownOpen = false;
+
+  function closeAllDropDown() {
     $("#DropdownMerge").remove();
     $("#DropdownLink").remove();
-}
+  }
 
-function showDropLink(btn, id) {
-  if ($(btn).next().length == 0 || !linkDropDownOpen){
-    linkDropDownOpen = true;
-    closeAllDropDown();
-    var tropdown = templateDropdownLink();
-    $(btn).after(tropdown);
-    $('#dependsOn').focus();
-    dropdownMenu = tropdown;
-    $(".auto").bind( "keydown", function( event ) {
-      if (event != undefined){
-        if (event.keyCode === 13){
-          if (! $( this ).autocomplete( "instance" ).menu.active ) {
-            link(id, this.id, split($(this).val().trim()));
+  function showDropLink(btn, id) {
+    if ($(btn).next().length === 0 || !linkDropDownOpen) {
+      linkDropDownOpen = true;
+      closeAllDropDown();
+      const tropdown = templateDropdownLink();
+      $(btn).after(tropdown);
+      $('#dependsOn').focus();
+      $(".auto").on("keydown", function(event) {
+        if (event !== undefined) {
+          if (event.keyCode === 13) {
+            if (!$(this).autocomplete("instance").menu.active) {
+              link(id, this.id, split($(this).val().trim()));
+              closeAllDropDown();
+            }
+          } else if (event.keyCode === $.ui.keyCode.TAB &&
+              $(this).autocomplete("instance").menu.active) {
+            event.preventDefault();
+          }
+        }
+      }).autocomplete({
+        minLength: 0,
+        delay: 0,
+        source: function(request, response) {
+          let results = $.ui.autocomplete.filter(autocompleteValues, extractLast(request.term));
+          const allValues = split(request.term);
+          allValues.splice(allValues.length - 1, 1);
+          results = results.filter(function(el) {
+            if (el['value'] === id) return false;
+            return allValues.every(function(input) {
+              return el['value'] !== input;
+            });
+          });
+          response(results.slice(0, 10));
+        },
+        focus: function() { return false; },
+        select: function(event, ui) {
+          const terms = split(this.value);
+          terms.pop();
+          terms.push(ui.item.value);
+          terms.push("");
+          this.value = terms.join(" ");
+          return false;
+        }
+      });
+    } else {
+      closeAllDropDown();
+    }
+    autocompleteValues.sort(function(a, b) { return a['value'] - b['value']; });
+  }
+
+  function showDropMerge(btn, id) {
+    if ($(btn).next().next().length === 0 || linkDropDownOpen) {
+      closeAllDropDown();
+      linkDropDownOpen = false;
+      const tropdown = templateDropdownMerge();
+      $(btn).parent().append(tropdown);
+      $('#merge').focus();
+      $(".auto").on("keydown", function(event) {
+        if (event.keyCode === 13) {
+          if (!$(this).autocomplete("instance").menu.active) {
+            merge(id, split($(this).val().trim()));
             closeAllDropDown();
           }
-        }else if ( event.keyCode === $.ui.keyCode.TAB &&
-            $( this ).autocomplete( "instance" ).menu.active ) {
+          return;
+        }
+        if (event.keyCode === $.ui.keyCode.TAB &&
+            $(this).autocomplete("instance").menu.active) {
           event.preventDefault();
         }
-      }
-    }).autocomplete({
-      minLength: 0,
-      delay: 0,
-      source: function( request, response ) {
-        // delegate back to autocomplete, but extract the last term
-        var results =$.ui.autocomplete.filter(
-          autocompleteValues, extractLast( request.term ) );
-
-        var allValues = split(request.term);
-        allValues = allValues.slice(0,allValues.length-1);
-
-        results = results.filter(function(el){
-          //filter the current ticket
-          if (el['value'] == id){
-            return false;
-          }
-          //filter all already entered tickets  
-          return allValues.every(function(input){
-            return el['value'] != input;
+      }).autocomplete({
+        minLength: 0,
+        delay: 0,
+        source: function(request, response) {
+          let results = $.ui.autocomplete.filter(autocompleteValues, request.term);
+          results = results.filter(function(el) {
+            return el['value'] !== id;
           });
-        });
-        //show a maximum of 10 results
-        response(results.slice(0,10));
-      },
-      focus: function() {
-        // prevent value inserted on focus
-        return false;
-      },
-      select: function( event, ui ) {
-        var terms = split( this.value );
-        // remove the current input
-        terms.pop();
-        // add the selected item
-        terms.push( ui.item.value );
-        // add placeholder to get the comma-and-space at the end
-        terms.push( "" );
-        this.value = terms.join( " " );
-        return false;
-      }
-    });
-  }else{
-    closeAllDropDown();
-  }
-  autocompleteValues.sort(function(a, b){return a['value']-b['value']});
-}
-
-
-function showDropMerge(btn, id) {
-  if ($(btn).next().next().length == 0 || linkDropDownOpen){
-    closeAllDropDown();
-    linkDropDownOpen = false;
-    var tropdown = templateDropdownMerge();
-    $(btn).parent().append(tropdown);
-    $('#merge').focus();
-    dropdownMenu = tropdown;
-    $(".auto").bind( "keydown", function( event ) {
-      if (event.keyCode == 13){
-        if (! $( this ).autocomplete( "instance" ).menu.active ) {
-          merge(id, split($(this).val().trim()));
-          closeAllDropDown();
+          response(results.slice(0, 10));
+        },
+        focus: function() { return false; },
+        select: function(event, ui) {
+          const terms = split(this.value);
+          terms.pop();
+          terms.push(ui.item.value);
+          terms.push("");
+          this.value = terms.join(" ");
+          return false;
         }
-        return;
-      }
-      if ( event.keyCode === $.ui.keyCode.TAB &&
-          $( this ).autocomplete( "instance" ).menu.active ) {
-        event.preventDefault();
-      }
-    }).autocomplete({
-      minLength: 0,
-      delay: 0,
-      source: function( request, response ) {
-        // delegate back to autocomplete
-        var results =$.ui.autocomplete.filter(
-          autocompleteValues, request.term );
-        results = results.filter(function(el){
-        //filter the current ticket
-          if (el['value'] === id){
-            return false;
-          }
-          return true;
-        });
-        //show a maximum of 10 results
-        response(results.slice(0,10));
-      },
-      focus: function() {
-        // prevent value inserted on focus
-        return false;
-      },
-      select: function( event, ui ) {
-        var terms = split( this.value );
-        // remove the current input
-        terms.pop();
-        // add the selected item
-        terms.push( ui.item.value );
-        // add placeholder to get the comma-and-space at the end
-        terms.push( "" );
-        this.value = terms.join( " " );
-        return false;
-      }
-    });
-  }else{
-    closeAllDropDown();
+      });
+    } else {
+      closeAllDropDown();
+    }
+    autocompleteValues.sort(function(a, b) { return a['value'] - b['value']; });
   }
-  autocompleteValues.sort(function(a, b){return a['value']-b['value']});
-}
 
 //////////////////USERINPUT FOR KANBAN //////////////
-  var fullscreen = false;
-  function toggleFullScreen(){
-    var main = $('#main');
-    //TODO load/unload external css file
-    if (!fullscreen){
-      main.css({'width':'100%', 'height':'100%', 'position':'fixed', 'top':'0', 'left':'0', 'z-index':'9000', 'background-color':'white', 'bottom':'0px', 'right':'0px'});
+  let fullscreen = false;
+
+  function toggleFullScreen() {
+    const main = $('#main');
+    const nav = $('header.navbar, nav.navbar, #rt-header, #page-navigation, #main-navigation, .rt-header, #header');
+    fullscreen = !fullscreen;
+    if (fullscreen) {
+      main.addClass('kanban-fullscreen');
       $('body').css('overflow', 'hidden');
-      $('#page-navigation').hide();
-      $('#main-navigation').hide();
-      $('ul.tasks').css('overflow-y', 'scroll');
-      $('#lanes').css('height', '80vh');
-      fullscreen = true;
-    }else{
-      main.css({'width':'', 'height':'', 'position':'', 'top':'', 'left':'', 'z-index':'', 'background-color':'', 'bottom':'', 'right':''});
-      $('#page-navigation').show();
-      $('#main-navigation').show();
-      $('body').css('overflow','');
-      $('ul.tasks').css('overflow-y', '');
-      $('#lanes').css('height', '');
-      fullscreen = false;
+      nav.hide();
+    } else {
+      main.removeClass('kanban-fullscreen');
+      $('body').css('overflow', '');
+      nav.show();
     }
   }
 
-//FILTERS  
-  //checks if the current Filter accepts this ticket
-  function testFilter(ticket){
-    for (i = 0; i < filters.length; i++){
-      attrName = filters[i];
-      //match a single word
-      function match (word){
-//        if (ticket[attrName].indexOf(RegExp(word)) == -1){
-//          return false;
-//        }
-//        return true;
+//FILTERS
+  function testFilter(ticket) {
+    for (let i = 0; i < filters.length; i++) {
+      const attrName = filters[i];
+      const match = function(word) {
         return RegExp(word).test(ticket[attrName]);
-      }
-      //matches one of the words
-      if (filterWords[attrName].length > 0 && !filterWords[attrName].some(match)){
-          return false;
+      };
+      if (filterWords[attrName] && filterWords[attrName].length > 0 && !filterWords[attrName].some(match)) {
+        return false;
       }
     }
-    //matches all filters
     return true;
   }
 
-  //removes all tickets that don't apply to the filter object
- // function applyFilter(){
- //   //removes all tickets that are 
- //   $('.ticket').each(function(index){
- //     var id = $(this).attr('id');
- //     var ticket = ticketCache[id];
- //     if (!testFilter(ticket)){
- //       ticketViewCache[id] = this;
- //       $(this).detach();
- //       hidden.push(id);
- //     }
- //   });
- // }
+  let filters = [];
+  let filterWords = {};
 
-  var filters = [];
-  var filterWords = {};
-  //sets one attribute of the Filter to the value of the given <input>
-  function setFilter(name, input){
-    //set new filter
-    newVal = $(input).val().trim();
-    newWords = newVal.split(/\s+/).filter(Boolean);
+  function setFilter(name, input) {
+    const newVal = $(input).val().trim();
+    const newWords = newVal.split(/\s+/).filter(Boolean);
     filter[name] = newVal;
-    filters = Object.keys(filter)
-
+    filters = Object.keys(filter);
     filterWords[name] = newWords;
 
-    //check the visible elements
-    var newHidden = [];
-    $('.ticket').each(function(index){
-      var id = $(this).attr('id');
-      var ticket = ticketCache[id];
-      if (!testFilter(ticket)){
+    const newHidden = [];
+    $('.ticket').each(function() {
+      const id = $(this).attr('id');
+      const ticket = ticketCache[id];
+      if (!testFilter(ticket)) {
         ticketViewCache[id] = this;
- //       this.remove();
-   //     $(this).empty();
         $(this).remove();
-   //     $(this).detach();
-  //      console.log('hidden push: ' + id);
         newHidden.push(id);
       }
     });
-    //check the hidden elements
-    hidden.forEach(function(id, index){
-      var ticket = ticketCache[id];
-      if (testFilter(ticket)){
-     //   var newView = templateTicket(ticket);
-     //   insertTicket(ticket, newView);
+    hidden.forEach(function(id) {
+      const ticket = ticketCache[id];
+      if (testFilter(ticket)) {
         insertTicket(ticket, ticketViewCache[id]);
-      }else{
-  //      console.log('hidden push: ' + id);
+      } else {
         newHidden.push(id);
       }
     });
-    //set new hidden elements
     hidden = newHidden;
   }
 
-  function clearFilter(){
+  function clearFilter() {
     $('.filter').val('');
-    $('.filter').keyup();
+    $('.filter').trigger('keyup');
     filters = {};
   }
 
 //////////////////////UTIL//////////////////////////
-  var ticketFields = [/id/g, /Queue/g, /Owner/g, /Creator/g, /Subject/g, /Status/g, /Priority/g, /InitialPriority/g, /FinalPriority/g, /Requestors/g, /Created/g, /Starts/g, /Started/g, /Due/g, /Resolved/g, /Told/g, /LastUpdated/g, /TimeEstimated/g, /TimeWorked/g, /TimeLeft/g, /Cc/g, /AdminCc/g];
-  var ticketFieldsString = ['id', 'Queue', 'Owner', 'Creator', 'Subject', 'Status', 'Priority', 'InitialPriority', 'FinalPriority', 'Requestors', 'Created', 'Starts', 'Started', 'Due', 'Resolved', 'Told', 'LastUpdated', 'TimeEstimated', 'TimeWorked', 'TimeLeft', 'Cc', 'AdminCc'];
-  //converts a query to a function that accepts tickets and returns true or false
-  function toFunction(query){
-    var funString = query.replace(/AND/g, '&&');
+  const ticketFields = [/id/g, /Queue/g, /Owner/g, /Creator/g, /Subject/g, /Status/g, /Priority/g, /InitialPriority/g, /FinalPriority/g, /Requestors/g, /Created/g, /Starts/g, /Started/g, /Due/g, /Resolved/g, /Told/g, /LastUpdated/g, /TimeEstimated/g, /TimeWorked/g, /TimeLeft/g, /Cc/g, /AdminCc/g];
+  const ticketFieldsString = ['id', 'Queue', 'Owner', 'Creator', 'Subject', 'Status', 'Priority', 'InitialPriority', 'FinalPriority', 'Requestors', 'Created', 'Starts', 'Started', 'Due', 'Resolved', 'Told', 'LastUpdated', 'TimeEstimated', 'TimeWorked', 'TimeLeft', 'Cc', 'AdminCc'];
+
+  function toFunction(query) {
+    let funString = query.replace(/AND/g, '&&');
     funString = funString.replace(/OR/g, '||');
     funString = funString.replace(/NOT/g, '!');
     funString = funString.replace(/=/g, '==');
     funString = funString.replace(/<==/g, '<=');
     funString = funString.replace(/>==/g, '>=');
     funString = funString.replace(/<>/g, '!=');
-    for (var i = 0; i < ticketFields.length; i++){
-      funString = funString.replace(ticketFields[i], 'ticket.'+ ticketFieldsString[i]);
+    for (let i = 0; i < ticketFields.length; i++) {
+      funString = funString.replace(ticketFields[i], 'ticket.' + ticketFieldsString[i]);
     }
-
     funString = 'return ' + funString;
     return new Function('ticket', funString);
   }
 
-  //binary search to insert objects at the lowest possible point
   function binarylower(obj, f, m, l, u) {
-    var mid;
-    if(l<=u)
-    {
-      mid=Math.floor((l+u)/2);
-      if (obj[mid] == undefined){
-        return l;
-      }
-      if(m > f(obj[mid])) {
-        return binarylower(obj,f,m,l,mid-1);
-      }
-      else {
-        return binarylower(obj,f,m,mid+1,u);
-      }
+    if (l <= u) {
+      const mid = Math.floor((l + u) / 2);
+      if (obj[mid] === undefined) return l;
+      if (m > f(obj[mid])) return binarylower(obj, f, m, l, mid - 1);
+      else return binarylower(obj, f, m, mid + 1, u);
     } else {
       return l;
     }
   }
 
-  //checks if two tickets are equal 
-  //NOTE: not all fields of an ticket are checked. some like: LastUpdated are ignored on purpose.
-  // only fields that are actually displayed must trigger an update. 
   function needsUpdate(a, b) {
-    if (a == undefined || b == undefined){
-      return true;
-    }
-    var Props = ["Queue", "Subject", "Owner", "Creator", "TimeEstimated", "Status", "Priority", "minute", "hour"];
-
-    for (var i = 0; i < Props.length; i++) {
-      var propName = Props[i];
-      if (a[propName] != b[propName]) {
-        return true;
-      }
+    if (a === undefined || b === undefined) return true;
+    const props = ["Queue", "Subject", "Owner", "Creator", "TimeEstimated", "Status", "Priority", "minute", "hour"];
+    for (let i = 0; i < props.length; i++) {
+      if (a[props[i]] !== b[props[i]]) return true;
     }
     return false;
   }
 
-
-  //returns the query (sets Date and CurrentUser)
-  function getQuery(string, timeOffSet){
-    var d = new Date();
-    d.setDate(d.getDate() - timeOffSet);
-    var date = d.getFullYear()+"-"+(d.getMonth()+1)+"-"+d.getDate();
-    var it = {
-      Date: date,
-      CurrentUser: currentUser
-    };
+  function getQuery(string, timeOffSet) {
+    const d = new Date();
+    d.setDate(d.getDate() - (timeOffSet || 0));
+    const date = d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate();
+    const it = {Date: date, CurrentUser: currentUser};
     return doT.template(string)(it);
   }
 
-  //deletes a ticket from all caches
-  function deleteTicket(ticket){
-    if (ticket != undefined){
-      var id = ticket['id'];
+  function deleteTicket(ticket) {
+    if (ticket !== undefined) {
+      const id = ticket['id'];
       console.log('delete: ' + id);
-      var index = -1;
-      for (var i = 0; i < autocompleteValues.length; i++){
-        if (autocompleteValues[i]['value'] == id){
+      let index = -1;
+      for (let i = 0; i < autocompleteValues.length; i++) {
+        if (autocompleteValues[i]['value'] === id) {
           index = i;
-          i = autocompleteValues.length;
+          break;
         }
       }
-      if (index > -1){
-        autocompleteValues.splice(index, 1);
-      }
+      if (index > -1) autocompleteValues.splice(index, 1);
+      const lane = ticket.lane;
       delete ticketCache[id];
       delete ticketViewCache[id];
       $("#" + id).remove();
+      if (lane !== undefined && lane >= 0) updateLaneCount(lane);
     }
   }
 
-  //AUTOCOMPLETION
-  function split( val ) {
-    return val.split( /\s+/ );
+  function split(val) {
+    return val.split(/\s+/);
   }
-  function extractLast( term ) {
-    return split( term ).pop();
+  function extractLast(term) {
+    return split(term).pop();
   }
 
-  //Ilustrat stuff
   function invertColor(hexTripletColor) {
-      var color = hexTripletColor;
-      color = color.substring(1);           // remove #
-      color = parseInt(color, 16);          // convert to integer
-      color = 0xFFFFFF ^ color;             // invert three bytes
-      color = color.toString(16);           // convert to hex
-      color = ("000000" + color).slice(-6); // pad with leading zeros
-      color = "#" + color;                  // prepend #
-      return color;
+      let color = hexTripletColor.substring(1);
+      color = parseInt(color, 16);
+      color = 0xFFFFFF ^ color;
+      color = color.toString(16);
+      color = ("000000" + color).slice(-6);
+      return "#" + color;
   }
 
-  //converts an integer to an Color
-  //is used to convert hashes to colors
-  function intToRGB(i){
-    var c = (i & 0x00FFFFFF)
-      .toString(16)
-      .toUpperCase();
-
-    return "00000".substring(0, 6 - c.length) + c;
-  }
-  function intToBrightRGB(i){
-    var c = ((~(i & 0x003F3F3F)) & 0x00FFFFFF)
-      .toString(16)
-      .toUpperCase();
-
+  function intToRGB(i) {
+    const c = (i & 0x00FFFFFF).toString(16).toUpperCase();
     return "00000".substring(0, 6 - c.length) + c;
   }
 
-//////////////////////REST CONNECTION///////////////
-  function merge(id, arr){
-    if (arr.length > 0){
-      arr.forEach(function(val){
-        if (!isNaN(val) &&  val != ""){
-          $.ajax({
-            url: "<%RT->Config->Get('WebPath')%>/REST/1.0/ticket/" + id + "/merge/" + val,
-            cache: false,
-            success: function(data, status, jqXHR){
-              getAndUpdateTicket(id);
-              getAndUpdateTicket(val);
-              if (data.indexOf("200 Ok") == -1 && data != ""){
-                alert(data);
-              }
-            },
-            error: function( jqXHR, textStatus, errorThrown ){
-              getAndUpdateTicket(id);
-              getAndUpdateTicket(val);
-              alert("XHR request returned: " + textStatus);
-            },
-            dataType: 'text'
-          });
-        }
-      });
-    }
-  }
-  function link(id, rel, arr){
-    if (arr.length > 0){
-      arr.forEach(function(val){
-        if (!isNaN(val) && val != ""){
-          var data = {
-            id: id,
-            rel: rel,
-            to: val
-          }
-          $.ajax({
-            url: "<%RT->Config->Get('WebPath')%>/REST/1.0/ticket/link",
-            data: data,
-            cache: false,
-            success: function(data, status, jqXHR){
-              if (data.indexOf("200 Ok") == -1 && data != ""){
-                alert(data);
-              }
-            },
-            error: function( jqXHR, textStatus, errorThrown ){
-              alert("XHR request returned: " + textStatus);
-            },
-            dataType: 'text'
-          });
-        }
-      });
-    }
+  function intToBrightRGB(i) {
+    const c = ((~(i & 0x003F3F3F)) & 0x00FFFFFF).toString(16).toUpperCase();
+    return "00000".substring(0, 6 - c.length) + c;
   }
 
-  //send ticket changes to the server
-  function saveTicket(id, dataStr){
-    var data = {
-      content: dataStr
-    }
-    var realId = id; 
-    (function(id){
-      $.ajax({
-        url: "<%RT->Config->Get('WebPath')%>/REST/1.0/ticket/" + realId + "/edit",
-        data: data,
-        cache: false,
-        success: function(data, status, jqXHR){
+//////////////////////REST 2.0 CONNECTION///////////////
 
-          if (data.indexOf("200 Ok") == -1 && data != ""){
-            getAndUpdateTicket(id);
-            alert(data);
-          }
-        },
-        error: function( jqXHR, textStatus, errorThrown ){
-          getAndUpdateTicket(id);
-          alert("XHR request returned: " + textStatus);
-        },
-        dataType: 'text'
-      });
-    })(id);
+  // Normalise a REST 2.0 JSON ticket object into the flat structure
+  // used throughout the Kanban JS (same field names as REST 1.0 text parser).
+
+  // RT REST 2.0 returns user/queue fields as objects, e.g.:
+  //   {"id": 14, "type": "user", "Name": "john", "_url": "..."}
+  // Extract the username/name from whatever shape the object has.
+  function extractName(field, fallback) {
+    if (!field) return fallback || '';
+    if (typeof field === 'string') return field;
+    // RT REST 2.0 user objects have a CamelCase 'Name' property
+    var name = field.Name || field.name || field.RealName || field.EmailAddress;
+    if (name) return name;
+    // RT uses id="Nobody" (string) for unassigned tickets — treat string ids as names
+    if (field.id !== undefined && field.id !== null) {
+      var sid = String(field.id);
+      if (sid) return sid;
+    }
+    return fallback || '';
   }
 
-  var Queues = ['General', 'FOO', 'FOOB'];
-  function createRandomTickets(){
-    for (var i = 0; i < 100; i++){
-      var dataStr = "";
-      dataStr += "status: " + Columns[Math.floor(Math.random()*4)]['Status'][0] + "\n";
-      dataStr += "Subject: Random Generated Ticket Number: " + i + "\n";
-      dataStr += "Queue: " + Queues[Math.floor(Math.random()*Queues.length)] + "\n";
-
-      var data = {
-        content: dataStr
-      }
-
-      $.ajax({
-        url: "<%RT->Config->Get('WebPath')%>/REST/1.0/ticket/new" ,
-        data: data,
-        cache: false,
-        success: function(data, status, jqXHR){
-          console.log('new ticket created');
-        },
-        error: function( jqXHR, textStatus, errorThrown ){
-          console.log(errorThrown);
-        },
-        dataType: 'text'
-      });
-    }
+  function extractNameList(field) {
+    if (!field) return '';
+    if (typeof field === 'string') return field;
+    if (Array.isArray(field)) return field.map(function(r) { return extractName(r); }).join(', ');
+    return extractName(field);
   }
 
-  //gets a ticket and checks if it needs an update.
-  function getAndUpdateTicket(id){
-    /*
-    var query = '((' + Columns[0]['Query'] + ')';
-    for (var i = 1; i < Columns.length; i++){
-      query += 'OR (' + Columns[i]['Query'] + ')';
-    }
-    query += ') AND id=' + id;
-    query = getQuery(query);
-    query += "&orderby=-Priority&format=l";
+  function normalizeTicket(data) {
+    if (!data || !data.id) return undefined;
 
-    (function(id){
-      $.ajax({
-        url:"<%RT->Config->Get('WebPath')%>/REST/1.0/search/ticket?query=" + query, */
-    (function(id){
-      $.ajax({
-        url:"<%RT->Config->Get('WebPath')%>/REST/1.0/ticket/" + id,
-        async: true,
-        success: function (output) {
-          var split = output.split("--");
-          if (split.length > 0){
-            if (split.length > 1){
-              console.log('error: ticketID is not unique');
-            }
-            var oldTicket = ticketCache[id];
-            var newTicket = parseTicket(split[0]);
+    const ticket = {};
+    ticket['id']              = String(data.id);
+    ticket['Subject']         = data.Subject        || '';
+    ticket['Status']          = data.Status         || '';
+    ticket['Priority']        = parseInt(data.Priority)         || 0;
+    ticket['InitialPriority'] = parseInt(data.InitialPriority)  || 0;
+    ticket['FinalPriority']   = parseInt(data.FinalPriority)    || 0;
+    ticket['TimeEstimated']   = parseInt(data.TimeEstimated)    || 0;
+    ticket['TimeWorked']      = parseInt(data.TimeWorked)       || 0;
+    ticket['TimeLeft']        = parseInt(data.TimeLeft)         || 0;
 
-            if (newTicket == undefined){
-              console.log("ticket: " + id + " undefined and therefore deleted");
-              //ticket got deleted
-              //remove ticket from caches and the view
-              deleteTicket(oldTicket);
-              return;
-            }
+    ticket['Owner']   = extractName(data.Owner,   'Nobody');
+    ticket['Queue']   = extractName(data.Queue,   '');
+    ticket['Creator'] = extractName(data.Creator, '');
 
+    // Date fields
+    ticket['Created']     = data.Created     || '';
+    ticket['Starts']      = data.Starts      || '';
+    ticket['Started']     = data.Started     || '';
+    ticket['Due']         = data.Due         || '';
+    ticket['Resolved']    = data.Resolved    || '';
+    ticket['Told']        = data.Told        || '';
+    ticket['LastUpdated'] = data.LastUpdated || '';
 
-            //TODO check which lane and if any lane if no lane then delete the ticket
-            //Gets the correct lane to insert this Ticket.
-            var lane = -1;
-            for (var i = 0; i < Columns.length; i++){
-              if (toFunction(getQuery(Columns[i].Query, Columns[i].timeOffSet))(newTicket)){
-                lane = i;
-                break;
-              } 
-            }
-            newTicket.lane = lane;
-            //ticket fits into no lane
-            if (lane == -1){
-              deleteTicket(newTicket);
-              return;
-            }
+    ticket['Requestors'] = extractNameList(data.Requestors);
+    ticket['Cc']         = extractNameList(data.Cc);
+    ticket['AdminCc']    = extractNameList(data.AdminCc);
 
-            if (oldTicket == undefined){
-              //ticket is new
-              console.log("new ticket: " + id);
-              updateTicketPosition(newTicket);
-              return;
-            }
-            if (needsUpdate(oldTicket, newTicket)){
-              console.log("ticket updated: " + id);
-            //  if (oldTicket['Priority'] === newTicket['Priority'] && oldTicket['Status'] === newTicket['Status']){
-            //    //priority is unchanged
-            //    //replace ticket
-            //    ticketCache[id] = newTicket;
-            //    $("#"+newTicket['id']).replaceWith(templateTicket(newTicket));
-            //    //TODO check filters
-            //  }else{
-                //priority is changed
-                //find new position of the ticket
-                updateTicketPosition(newTicket);
-             // }
-            }else{
-              //no gui updates needed, hower, some other values might have changed
-              ticketCache[id] = newTicket;
-            }
-          }else{
-            console.log("ticket: " + id + " deleted");
-            deleteTicket(oldTicket);
-          }
-        },
-        error: function( jqXHR, textStatus, errorThrown ){
-          console.log(errorThrown);
-          alert("XHR request returned: " + textStatus);
-        }
-      });
-    })(id);
-  }
-
-  //rest output => javascript object
-  function parseTicket(str){
-    var keyValue = str.split("\n");
-    var ticket = {};
-    for (var i = 0; i < keyValue.length; i++){
-      if (keyValue[i].indexOf(":") != -1){
-        var split = keyValue[i].split(":");
-        var key = split.shift().trim();
-        var value = split.join(":").trim();
-        ticket[key] = value;
-      }
-    }
-    //check if this is a ticket
-    if (ticket['id'] == undefined){
-      return undefined;
-    }
-    ticket['id'] = ticket['id'].split('/')[1];
     calcCustomTicketValues(ticket);
     return ticket;
   }
-  function calcCustomTicketValues(ticket){
+
+  // Fields requested from REST 2.0 search / single-ticket endpoints
+  const REST2_FIELDS = [
+    'id', 'Subject', 'Status', 'Priority', 'InitialPriority', 'FinalPriority',
+    'Queue', 'Owner', 'Creator', 'Requestors', 'Cc', 'AdminCc',
+    'TimeEstimated', 'TimeWorked', 'TimeLeft',
+    'Created', 'Starts', 'Started', 'Due', 'Resolved', 'Told', 'LastUpdated'
+  ].join(',');
+
+  const REST2_BASE = "<%RT->Config->Get('WebPath')%>/REST/2.0";
+
+  function merge(id, arr) {
+    arr.forEach(function(val) {
+      if (!isNaN(val) && val !== "") {
+        $.ajax({
+          url: REST2_BASE + "/ticket/" + id + "/merge/" + val,
+          type: 'PUT',
+          success: function() {
+            getAndUpdateTicket(id);
+            getAndUpdateTicket(val);
+          },
+          error: function(jqXHR, textStatus) {
+            getAndUpdateTicket(id);
+            getAndUpdateTicket(val);
+            alert("Merge failed: " + textStatus);
+          }
+        });
+      }
+    });
+  }
+
+  function link(id, rel, arr) {
+    arr.forEach(function(val) {
+      if (!isNaN(val) && val !== "") {
+        $.ajax({
+          url: REST2_BASE + "/ticket/" + id + "/links",
+          type: 'POST',
+          contentType: 'application/json',
+          data: JSON.stringify({rel: rel, to: REST2_BASE + "/ticket/" + val}),
+          success: function() {},
+          error: function(jqXHR, textStatus) {
+            alert("Link failed: " + textStatus);
+          }
+        });
+      }
+    });
+  }
+
+  // Accept a plain JS object of field→value pairs; PUT to REST 2.0.
+  function saveTicket(id, fields) {
+    (function(ticketId) {
+      $.ajax({
+        url: REST2_BASE + "/ticket/" + ticketId,
+        type: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify(fields),
+        success: function(data, status, jqXHR) {
+          if (jqXHR.status !== 200) {
+            getAndUpdateTicket(ticketId);
+          }
+        },
+        error: function(jqXHR, textStatus) {
+          getAndUpdateTicket(ticketId);
+          alert("Save failed: " + textStatus);
+        }
+      });
+    })(id);
+  }
+
+  function getAndUpdateTicket(id) {
+    (function(ticketId) {
+      $.ajax({
+        url: REST2_BASE + "/ticket/" + ticketId + "?fields=" + REST2_FIELDS,
+        type: 'GET',
+        dataType: 'json',
+        success: function(data) {
+          const oldTicket = ticketCache[ticketId];
+          const newTicket = normalizeTicket(data);
+
+          if (newTicket === undefined) {
+            console.log("ticket " + ticketId + " undefined — deleted");
+            deleteTicket(oldTicket);
+            return;
+          }
+
+          let lane = -1;
+          for (let i = 0; i < Columns.length; i++) {
+            if (toFunction(getQuery(Columns[i].Query, Columns[i].timeOffSet))(newTicket)) {
+              lane = i;
+              break;
+            }
+          }
+          newTicket.lane = lane;
+
+          if (lane === -1) {
+            deleteTicket(newTicket);
+            return;
+          }
+          if (oldTicket === undefined) {
+            console.log("new ticket: " + ticketId);
+            updateTicketPosition(newTicket);
+            return;
+          }
+          if (needsUpdate(oldTicket, newTicket)) {
+            console.log("ticket updated: " + ticketId);
+            updateTicketPosition(newTicket);
+          } else {
+            ticketCache[ticketId] = newTicket;
+          }
+        },
+        error: function(jqXHR, textStatus) {
+          console.log(textStatus);
+          alert("Fetch ticket failed: " + textStatus);
+        }
+      });
+    })(id);
+  }
+
+  function calcCustomTicketValues(ticket) {
     ticket['Priority'] = parseInt(ticket['Priority']);
-    ticket["Color"] = "#" + intToRGB(parseInt("0x" + md5(ticket["Owner"]).substring(0,8)));
+    ticket["Color"]        = "#" + intToRGB(parseInt("0x" + md5(ticket["Owner"]).substring(0, 8)));
     ticket["ColorInverse"] = invertColor(ticket["Color"]);
-    ticket["ColorBright"] =  "#" + intToBrightRGB(parseInt("0x" + md5(ticket["Queue"]).substring(0,8)));
-    ticket['TimeEstimated'] = ticket['TimeEstimated'].split(' ')[0];
-    ticket['hour'] = Math.floor( parseInt(ticket['TimeEstimated']) / 60);
-    ticket['minute'] = parseInt(ticket['TimeEstimated']) % 60;
-    ticket['Creator'] = ticket['Creator'].substring(0, <% $cutCreatorName %>);
+    ticket["ColorBright"]  = "#" + intToBrightRGB(parseInt("0x" + md5(ticket["Queue"]).substring(0, 8)));
+    ticket['TimeEstimated'] = parseInt(ticket['TimeEstimated']) || 0;
+    ticket['hour']   = Math.floor(ticket['TimeEstimated'] / 60);
+    ticket['minute'] = ticket['TimeEstimated'] % 60;
+    ticket['Creator'] = String(ticket['Creator']).substring(0, <% $cutCreatorName %>);
   }
 
-  //removes old ticket and creates new one
-  function updateTicketPosition(ticket){
-    console.log('update ticket position');
-    //update custom ticket values
+  function updateTicketPosition(ticket) {
     calcCustomTicketValues(ticket);
-    //update cache
+    // Track old lane before removal so we can update its count too
+    const oldElem = document.getElementById(ticket['id']);
+    const oldLaneUl = oldElem ? oldElem.closest('ul.tasks') : null;
     ticketCache[ticket['id']] = ticket;
-    //remove old view
     $("#" + ticket['id']).remove();
-    //create new view
-    var newTicketView = templateTicket(ticket);
-
+    const newTicketView = templateTicket(ticket);
     insertTicket(ticket, newTicketView);
-  }
-  //inserts a ticket and recalculate the correct possition
-  function insertTicket(ticket, newTicketView){
-    var column = Columns[ticket.lane].view;
-    if (column.length > 0){ //insert via binary search
-      var getPriority = function(ticketView){
-        //return ticketCache[$(ticketView).attr('id')]['Priority'];
-        return ticketCache[ticketView.id]['Priority'];
+    updateLaneCount(ticket.lane);
+    // Update old lane count if ticket moved lanes
+    if (oldLaneUl && oldLaneUl.id) {
+      for (var i = 0; i < Columns.length; i++) {
+        if (Columns[i].view && Columns[i].view[0] === oldLaneUl && i !== ticket.lane) {
+          updateLaneCount(i);
+          break;
+        }
       }
-      var index = binarylower(column.children(), getPriority, ticket['Priority'], 0, column.children().length);
-      if (index >= column.children().length){
-        //insert at the end
-        column.append(newTicketView);  
-      }else {
-        $(column.children()[index]).before(newTicketView);
-      }
-    }else{//it's the first element, just insert it
-        column.append(newTicketView);  
     }
   }
 
-//  function updateTicket(n){
-//    var xmlhttp=new XMLHttpRequest();
-//    xmlhttp.open("GET", "<%RT->Config->Get('WebPath')%>/REST/1.0/ticket/"+n+"/show", true);
-//    xmlhttp.send();
-//    xmlhttp.onreadystatechange=function() {
-//      if (xmlhttp.readyState==4 && xmlhttp.status==200) {
-//        var ticket = parseTicket(xmlhttp.responseText);
-//        initTicket(ticket);
-//      }
-//    };
-//  }
-
+  function insertTicket(ticket, newTicketView) {
+    const column = Columns[ticket.lane].view;
+    if (column.length > 0) {
+      const getPriority = function(ticketView) {
+        return ticketCache[ticketView.id]['Priority'];
+      };
+      const index = binarylower(column.children(), getPriority, ticket['Priority'], 0, column.children().length);
+      if (index >= column.children().length) {
+        column.append(newTicketView);
+      } else {
+        $(column.children()[index]).before(newTicketView);
+      }
+    } else {
+      column.append(newTicketView);
+    }
+  }
 
 
 ///////////////////////INIT///////////////////
 
-  //function initAutocomplete(){
-  //    console.log('foo');
-  //  for(var id in ticketCache) {
-  //    console.log('foo');
-  //    var ticket = ticketCache[id];
-  //    autocompleteValues.push({label: "#" + id + ': ' + ticket['Subject'], value: id});
-  //  }
-  //}
+  function updateLaneCount(laneIndex) {
+    var col = Columns[laneIndex];
+    if (col && col.view) {
+      var count = col.view.children(':not(.drop-area)').length;
+      col.view.closest('.card').find('.lane-count').text(count);
+    }
+  }
 
-  function initTicket(ticket){
-    if (ticketCache[ticket["id"]] == undefined){
-      var column = Columns[ticket.lane].view;
-      var newTicketView = templateTicket(ticket);
-      ticketCache[ticket['id']] = ticket;            
-      autocompleteValues.push({label: "#" + ticket['id'] + ': ' + ticket['Subject'], value: ticket['id']});      
-      if (!testFilter(ticket)){
+  function initTicket(ticket) {
+    if (ticketCache[ticket["id"]] === undefined) {
+      const column = Columns[ticket.lane].view;
+      const newTicketView = templateTicket(ticket);
+      ticketCache[ticket['id']] = ticket;
+      autocompleteValues.push({label: "#" + ticket['id'] + ': ' + ticket['Subject'], value: ticket['id']});
+      if (!testFilter(ticket)) {
         ticketViewCache[ticket['id']] = newTicketView;
         hidden.push(ticket['id']);
-      }else{
+      } else {
         column.append(newTicketView);
+        updateLaneCount(ticket.lane);
       }
-    }else{
-      console.log("Only use this function during the init calls");
+    } else {
+      console.log("Only use initTicket during init calls");
     }
   }
 
   function initColumns() {
-    var lanes = $('#lanes');
-
-    for (var i = 0; i < Columns.length; i++){
-      //get id for the column
-      Columns[i]['Id'] = "Column_" + i; 
-      //set default timeOffSet
-      if (Columns[i].timeOffSet == undefined){
-        Columns[i].timeOffSet = 5;
-      }
+    const lanes = $('#lanes');
+    for (let i = 0; i < Columns.length; i++) {
+      Columns[i]['Id'] = "Column_" + i;
+      if (Columns[i].timeOffSet === undefined) Columns[i].timeOffSet = 5;
 
       lanes.append(templateColumn(Columns[i]));
-      var thisLane = $("#" + Columns[i]['Id']);
+      const thisLane = $("#" + Columns[i]['Id']);
       Columns[i].view = thisLane;
-      (function(LaneObject, thisLane, laneID){
+
+      (function(LaneObject, thisLane, laneID) {
         thisLane.sortable({
-          connectWith: [".wipDrop"], 
+          connectWith: [".wipDrop"],
           placeholder: "drop-area",
-          receive:function (event, ui) {
-            updatePS(ui["item"]["context"]["id"], LaneObject, thisLane, '', laneID);
+          receive: function(event, ui) {
+            // ui.item.context was removed in jQuery 3 — use ui.item[0] (native DOM node)
+            updatePS(ui.item[0].id, LaneObject, thisLane, '', laneID);
           },
           start: function(event, ui) {
             ui.item.data('start_pos', ui.item.index());
           },
-          stop: function (event, ui) {
-            var start_pos = ui.item.data('start_pos');
-            if (start_pos != ui.item.index()) {
-              if (ui['item']['context'].parentElement == event['target']){
-                updatePS(ui["item"]["context"]["id"], LaneObject, thisLane, '', laneID);
+          stop: function(event, ui) {
+            const start_pos = ui.item.data('start_pos');
+            if (start_pos !== ui.item.index()) {
+              if (ui.item[0].parentElement === event.target) {
+                updatePS(ui.item[0].id, LaneObject, thisLane, '', laneID);
               }
             }
           },
-          active: function(event, ui){
+          activate: function(event, ui) {
             closeAllDropDown();
           },
           scroll: true,
           items: 'li',
-          //scrollSensitivity: 20,
-          //scrollSpeed: 20, 
           tolerance: "pointer",
-          opacity: 0.9 ,
-          over: function (event, ui) {
-            ui.item.data('sortableItem').scrollParent = ui.placeholder.parent();
-            ui.item.data('sortableItem').overflowOffset = ui.placeholder.parent().offset();
+          opacity: 0.9,
+          over: function(event, ui) {
+            // Fix scroll-parent for cross-column drag in jQuery UI 1.12+
+            try {
+              var si = ui.item.data('ui-sortable') || ui.item.data('sortableItem');
+              if (si) {
+                si.scrollParent = ui.placeholder.parent();
+                si.overflowOffset = ui.placeholder.parent().offset();
+              }
+            } catch(e) { /* ignore internal jQuery UI API changes */ }
           }
         });
       })(Columns[i], thisLane, i);
-      
-  //    var stati = Columns[i]['Status'];
-  //    for (var j = 0; j < stati.length; j++){
-  //      ColumnLookup[stati[j]] = thisLane;
-  //    }
     }
-  //  var width = Columns.length * 295;
-  //  lanes.css({"width":width});
   }
 
+  // Load tickets for all lanes using REST 2.0 search endpoint.
   function initView() {
-    for (var i = 0; i < Columns.length; i++){
-      var url = "<%RT->Config->Get('WebPath')%>/REST/1.0/search/ticket?query=" + getQuery(Columns[i]['Query'], Columns[i].timeOffSet)+"&orderby=-Priority&format=l";
-      (function (lane){
+    for (let i = 0; i < Columns.length; i++) {
+      const query   = encodeURIComponent(getQuery(Columns[i]['Query'], Columns[i].timeOffSet));
+      const url     = REST2_BASE + "/tickets?query=" + query
+                      + "&orderby=-Priority"
+                      + "&fields=" + encodeURIComponent(REST2_FIELDS)
+                      + "&per_page=500";
+      (function(lane) {
         $.ajax({
           url: url,
-          async: true,
-          success: function (output) {
-            var split = output.split("--");
-            for (var j = 0; j < split.length; j++){
-              if (split[j].indexOf(":") != -1){
-                var ticket = parseTicket(split[j]);
+          type: 'GET',
+          dataType: 'json',
+          success: function(data) {
+            const items = data.items || [];
+            items.forEach(function(item) {
+              // items from the search result already contain the requested fields
+              const ticket = normalizeTicket(item);
+              if (ticket) {
                 ticket.lane = lane;
                 initTicket(ticket);
               }
-            }
-            //TODO error handling
+            });
+          },
+          error: function(jqXHR, textStatus) {
+            console.log("initView lane " + lane + " error: " + textStatus);
           }
         });
       })(i);
     }
-  };
+  }
 
-var sequence = undefined;
+  let sequence = undefined;
 
-  function initWebsockets(){
-    // BUG hardcoded path
-    var path = location.protocol.replace('http', 'ws') +"//"+ location.hostname;
+  function initWebsockets() {
+    let path = location.protocol.replace('http', 'ws') + "//" + location.hostname;
 %if ($myPort != -1){
     path += ":<%$myPort%>";
 %}else{
-    if (location.port != "") {
-      path += ":"+location.port;
+    if (location.port !== "") {
+      path += ":" + location.port;
     }
 %}
     path += "<%RT->Config->Get('WebPath')%>" + "/websocket";
-//     console.log(path)
 
-    var ws = new ReconnectingWebSocket(path);
+    const ws = new ReconnectingWebSocket(path);
 
-    ws.onopen = function () {
-      console.log('Connection opened');
-      $('#wsIndicator').removeClass('circle_red').addClass('circle_green');
-
+    ws.onopen = function() {
+      console.log('WebSocket connection opened');
+      $('#wsIndicator').removeClass('disconnected').addClass('connected').attr('title','WebSocket: connected');
       setInterval(function() {
-        ws.send("Keep alive from client"  );
-      }, 200000 );
+        ws.send("Keep alive from client");
+      }, 200000);
     };
 
-    ws.onmessage = function (msg) {
-      var res = JSON.parse(msg.data).updateTicket;
-    
+    ws.onmessage = function(msg) {
+      const res = JSON.parse(msg.data).updateTicket;
+
       if (!isNaN(res.sequence)) {
-        if (sequence == undefined && res['id'] == undefined) {
+        if (sequence === undefined && res['id'] === undefined) {
           sequence = res.sequence;
-        } else if (sequence != res.sequence){
+        } else if (sequence !== res.sequence) {
           sequence = res.sequence;
-          ticketCache = {}; 
-          ticketViewCache = {}; //after removing ticket Views are stored in here 
+          ticketCache = {};
+          ticketViewCache = {};
           autocompleteValues = [];
-          hidden = []; //indices of removed ticketViews
-          filter = {}; //those filters are used to restrict the shown tickets even more
-          
+          hidden = [];
+          filter = {};
+
           Columns = config['lanes'];
           $('#lanes').empty();
           initColumns();
           initView();
-          //initiate the filters
-          $('.filter').keyup();
-    //      location.reload();
+          $('.filter').trigger('keyup');
         }
       }
-     
-      if (res['id'] != undefined && !isNaN(res.id)){
-        console.log("newMessage: update Ticket "+ res.id);
+
+      if (res['id'] !== undefined && !isNaN(res.id)) {
+        console.log("WebSocket: update ticket " + res.id);
         getAndUpdateTicket(res.id);
         sequence++;
-      }  
-    };
-    ws.onclose = function (msg) {
-     $('#wsIndicator').removeClass('circle_green').addClass('circle_red');
-      console.log('Connection closed');
+      }
     };
 
+    ws.onclose = function() {
+      $('#wsIndicator').removeClass('connected').addClass('disconnected').attr('title','WebSocket: disconnected');
+      console.log('WebSocket connection closed');
+    };
   }
 
-//builds the kanban when the page has loaded
-  $(document).ready(function() {
-    //get configuration
-    var firstKey = (Object.keys(configurations))[0];
-    config = JSON.parse($('<textarea />').html(configurations[firstKey]).text().replace(/(?:\r\n|\r|\n)/g, " "));
-    //initiate columns
-    Columns = config['lanes'];
-    initColumns();
-    //Get Tickets
-    initView(); 
-    //initiate the filters
-    $('.filter').keyup();
-    //init websockets
-    initWebsockets();   
-  });
-
+  // Define configurations before $(document).ready() to avoid TDZ issues
+  // when the widget is injected via HTMX into an already-ready document.
   var configurations = {
 % foreach(@DisplayedKanbans){
-    <% $_ %> : `<% $KanbanConfigs{$_}  %>`,
+    "<% $_ %>" : `<% $KanbanConfigs{$_}  %>`,
 %}
     dummyToAvoidThatLastComma: "empty"
+  };
+
+  function kanbanInit() {
+    try {
+      // Reset all state — safe for repeated calls (HTMX re-init, page restore)
+      ticketCache      = {};
+      ticketViewCache  = {};
+      autocompleteValues = [];
+      hidden           = [];
+      filter           = {};
+      filterWords      = {};
+      filters          = [];
+      $('#lanes').empty();
+
+      var keys = Object.keys(configurations).filter(function(k) { return k !== 'dummyToAvoidThatLastComma'; });
+      if (keys.length === 0) {
+        console.error('RT-Kanban: no kanban configurations found');
+        return;
+      }
+      var firstKey = keys[0];
+      config = JSON.parse($('<textarea />').html(configurations[firstKey]).text().replace(/(?:\r\n|\r|\n)/g, " "));
+      Columns = config['lanes'];
+      initColumns();
+      initView();
+      $('.filter').trigger('keyup');
+      initWebsockets();
+    } catch(e) {
+      console.error('RT-Kanban init error: ' + e.message, e);
+    }
   }
 
-  function setKanban(obj){
-    var configuration = obj.options[obj.selectedIndex].value;
-    console.log("set to configuration: " +configuration);
-   // console.log($('<textarea />').html(configurations[configuration]).text().replace(/(?:\r\n|\r|\n)/g, " "));
+  // Support both classic page load and HTMX-boosted navigation (RT 6).
+  $(document).ready(function() {
+    kanbanInit();
+  });
+  // If the widget is swapped in via HTMX after initial page load, re-init.
+  document.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.target && evt.target.querySelector && evt.target.querySelector('#lanes')) {
+      kanbanInit();
+    }
+  });
+
+  function setKanban(obj) {
+    const configuration = obj.options[obj.selectedIndex].value;
+    console.log("Switching to kanban: " + configuration);
     config = JSON.parse($('<textarea />').html(configurations[configuration]).text().replace(/(?:\r\n|\r|\n)/g, " "));
-    //clear all the old values
-    ticketCache = {}; 
-    ticketViewCache = {}; //after removing ticket Views are stored in here 
+    ticketCache = {};
+    ticketViewCache = {};
     autocompleteValues = [];
-    hidden = []; //indices of removed ticketViews
-    filter = {}; //those filters are used to restrict the shown tickets even more
-    
+    hidden = [];
+    filter = {};
+
     Columns = config['lanes'];
     $('#lanes').empty();
     initColumns();
     initView();
-    //initiate the filters
-    $('.filter').keyup();
+    $('.filter').trigger('keyup');
   }
-  
+
+  // Expose functions referenced from inline onclick/onchange/onkeyup attributes.
+  // These must be on window because HTML attribute handlers are evaluated in
+  // global scope, outside the IIFE.
+  window.clearFilter      = clearFilter;
+  window.setFilter        = setFilter;
+  window.setKanban        = setKanban;
+  window.toggleFullScreen = toggleFullScreen;
+  window.showDropLink     = showDropLink;
+  window.showDropMerge    = showDropMerge;
+  window.saveTimeMinutes  = saveTimeMinutes;
+  window.saveTimeHours    = saveTimeHours;
+  window.setOwner         = setOwner;
+  window.closeAllDropDown = closeAllDropDown;
+
+}()); // end IIFE — all variables are function-scoped, safe for HTMX re-execution
 </script>
 
-  <div id="main">
+  <div id="main" hx-history="false">
 
-    <button onclick='clearFilter()'> clear all filter </button>
-    <span>Owner: <input type="text" class="filter" onkeyup="setFilter('Owner', this)"></input></span>
-    <span>Subject: <input type="text" class="filter" onkeyup="setFilter('Subject', this)"></input></span>
-    <span>Queue: <input type="text" class="filter" onkeyup="setFilter('Queue', this)"></input></span>
-    <span>ID: <input type="text" class="filter" onkeyup="setFilter('id', this)"></input></span>
-    <span><label for="kanbanselector">Kanban: </label><select id="kanbanselector" onchange="setKanban(this)">
+    <div id="kanban-toolbar">
+
+      <div class="input-group input-group-sm" style="width:auto">
+        <span class="input-group-text">Owner</span>
+        <input type="text" class="form-control filter" style="width:90px" onkeyup="setFilter('Owner', this)">
+      </div>
+
+      <div class="input-group input-group-sm" style="width:auto">
+        <span class="input-group-text">Subject</span>
+        <input type="text" class="form-control filter" style="width:110px" onkeyup="setFilter('Subject', this)">
+      </div>
+
+      <div class="input-group input-group-sm" style="width:auto">
+        <span class="input-group-text">Queue</span>
+        <input type="text" class="form-control filter" style="width:90px" onkeyup="setFilter('Queue', this)">
+      </div>
+
+      <div class="input-group input-group-sm" style="width:auto">
+        <span class="input-group-text">ID</span>
+        <input type="text" class="form-control filter" style="width:60px" onkeyup="setFilter('id', this)">
+      </div>
+
+      <div class="input-group input-group-sm" style="width:auto">
+        <label class="input-group-text" for="kanbanselector">Kanban</label>
+        <select id="kanbanselector" class="form-select form-select-sm" onchange="setKanban(this)">
 % foreach(@DisplayedKanbans){
-       <option value="<% $_ %>"><% $_ %></option>  
+          <option value="<% $_ %>"><% $_ %></option>
 %}
-    </select></span>
-    <span class="wsStatus">WebSocket status: <span id="wsIndicator" class="circle_red"></span></span>
-    <div id="lanes">
+        </select>
+      </div>
+
+      <button class="btn btn-sm btn-outline-secondary" onclick="clearFilter()">&#10005; Filter</button>
+
+      <div class="ms-auto d-flex align-items-center gap-2">
+        <span id="wsIndicator" class="ws-dot disconnected" title="WebSocket: disconnected"></span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="toggleFullScreen()" title="Toggle fullscreen">&#x26F6;</button>
+      </div>
+
     </div>
-    <button onclick="toggleFullScreen()"> toggle full screen </button>
-    <!-- <button onclick="createRandomTickets()"> random 100 </button> -->
+
+    <div id="lanes"></div>
+
   </div>
 </&>
 
@@ -1139,32 +1022,6 @@ $users->LimitToPrivileged;
 
 
 # default configuration
-my $config = q(
-{
-  "lanes":[
-    {
-      "Name": "New Open",
-      "Query": "(Status='open' OR Status='new')",
-      "Change": {"Status": "open"}
-    },
-    {
-      "Name": "Stalled",
-      "Query": "(Status='stalled')",
-      "Change": {"Status": "stalled"}
-    },
-    {
-      "Name": "Resolved",
-      "Query": "(Status='resolved') AND (LastUpdated > '{{=it.Date}}')",
-      "Change": {"Status": "resolved"}
-    },
-    {
-      "Name": "Rejected",
-      "Query": "(Status='rejected') AND (LastUpdated > '{{=it.Date}}')",
-      "Change": {"Status": "rejected"}
-    }
-  ]
-});
-
 my %KanbanConfigs = (Default => q(
 {
   "lanes":[
@@ -1191,37 +1048,36 @@ my %KanbanConfigs = (Default => q(
   ]
 }));
 
-if (RT->Config->Get('KanbanConfigs')){
+if (RT->Config->Get('KanbanConfigs')) {
   %KanbanConfigs = RT->Config->Get('KanbanConfigs');
 }
-my @DisplayedKanbans = keys (%KanbanConfigs);
+my @DisplayedKanbans = keys(%KanbanConfigs);
 
-# override default configuration if it is set
-if (RT->Config->Get('KanbanDefault')){
+# Per-installation default
+if (RT->Config->Get('KanbanDefault')) {
   @DisplayedKanbans = RT->Config->Get('KanbanDefault');
 }
 
-# override default configuration with user specific configuration
-my $userName = $session{'CurrentUser'}->Name;
+# Per-user override
+my $userName   = $session{'CurrentUser'}->Name;
 my $userConfig = "Kanban_" . $userName;
-if (RT->Config->Get($userConfig)){
+if (RT->Config->Get($userConfig)) {
   @DisplayedKanbans = RT->Config->Get($userConfig);
 }
 
-
 my $readOnly = 0;
 my $userReadOnly = "KanbanReadOnly_" . $userName;
-if (RT->Config->Get($userReadOnly)){
+if (RT->Config->Get($userReadOnly)) {
   $readOnly = RT->Config->Get($userReadOnly);
 }
 
 my $myPort = -1;
-if (RT->Config->Get("WebsocketPort")){
+if (RT->Config->Get("WebsocketPort")) {
   $myPort = RT->Config->Get("WebsocketPort");
 }
 
 my $cutCreatorName = 10;
-if (RT->Config->Get("cutCreatorName")){
+if (RT->Config->Get("cutCreatorName")) {
   $cutCreatorName = RT->Config->Get("cutCreatorName");
 }
 
@@ -1230,7 +1086,3 @@ if (RT->Config->Get("cutCreatorName")){
 $Name => 'Users'
 
 </%ARGS>
-
-%#$users->WhoHaveRight( 
-%#    Right => 'OwnTicket'
-%#    IncludeSystemRights => 1);

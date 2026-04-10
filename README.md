@@ -1,285 +1,333 @@
-# NAME
+# RT-Extension-KANBAN
 
-RT-Extension-Kanban - Adds a Kanban to 'request tracker' which uses jQuery UI and Websockets for data visualization and management.
+Adds a Kanban board to [Request Tracker](https://bestpractical.com/request-tracker/) with real-time WebSocket updates, drag-and-drop ticket management, and a fully configurable lane layout.
 
-![A screenshot featuring the Kanban view with WebSocket status](https://raw.githubusercontent.com/nixcloud/rt-extension-kanban/master/screenshots/kanban.jpg)
+![Kanban board screenshot](https://raw.githubusercontent.com/nixcloud/rt-extension-kanban/master/screenshots/kanban.jpg)
 
-Main features:
+**Features**
 
-* realtime updates on all attached browsers: **No more page reloads** powered by WebSockets
-* **drag'n'drop ticket operations**
-* **powerful display-filters** which support regular expressions
-* **highly configurable** columns and drop-actions 
-* **Kanban-fullscreen** support for big monitors
+- Real-time updates across all connected browsers via WebSockets — no page reloads
+- Drag-and-drop ticket operations with automatic field updates
+- Powerful display filters with regular expression support
+- Highly configurable lanes with custom queries and drop actions
+- Fullscreen mode for large monitors
+- Bootstrap 5 / Dark Mode compatible UI (RT 6)
 
-# USAGE
-This kanban features all typical kanban functions as moving tickes per drag and drop. Depending where you drop tickets, their state will get updated using `REST 1.0`-calls. In each column the tickets are sorted by priority (highest at the top). The kanban-view is updated if tickets are altered using the `rt-coreExtension-websockets` technique. This means that each view is always up to date without any manual reloading.
+---
 
-The view and its behaviour is completely configurable. You can define which columns are shown and which ticket attributes they should represent. You can also define how the ticket is altered when it is dropped in a different column.     
-On top of that: when a ticket _A_ is dropped above another ticket _B_ the Priority of _A_ will be adjusted to be higher than _B_'s. By default, the tickets priority will never be reduced and only increased by the minimum amount to stay at the dropped position. 
+## Requirements
 
-# INSTALLATION
+| Component | Minimum version |
+|-----------|----------------|
+| Request Tracker | 6.0.0 |
+| Perl | 5.26 |
+| Redis | 5.0 (for WebSocket live updates) |
+| Mojolicious | 9.0 (for WebSocket server) |
+| Mojo::Redis | 3.27 (for WebSocket server) |
 
-- perl Makefile.PL
-- make
-- make install (this may need root permissions)
-- Edit your /opt/rt4/etc/RT_SiteConfig.pm and add this line:
+---
 
-        Plugin('RT::Extension::KANBAN');
+## Installation
 
-- Clear your mason cache
-    ```sh
-    rm -rf /opt/rt4/var/mason_data/obj/*
-    ```
-- Restart your webserver serving RT
+### 1 — Install the extension
 
-If you want live-updates of the Kanban with multiple clients you might want to install:
-
-*  <https://github.com/nixcloud/rt-coreExtension-websocket>
-
-# CONFIGURATION
-
-## Kanban configuration
-
-NOTE: There is a default configuration and chaning it is optional.
-
-The Kanban-views can be configured within the `RT_SiteConfig.pm` of the RT. 
-To do so, the hashmap `%KanbanConfigs` has to be defined.
-
-
-
-For example, the following configuration defines a single Kanban that only has two lanes:
-
-```javascript
-Set( %KanbanConfigs, (MyFirstKanban => q(
-{
-  "lanes":[
-    {
-      "Name": "New Open",
-      "Change": {"Status": "open"},
-      "Query": "(Status='open' OR Status='new')"
-    },
-    {
-      "Name": "Resolved",
-      "Change": {"Status": "resolved"},
-      "Query": "(Status='resolved') AND (LastUpdated > '{{=it.Date}}')",
-      "timeOffSet":7
-    }
-  ]
-})));
-```  
-
-NOTE: Whenever you make changes to the $Kanban_root or $KanbanDefault configuration **CLEAR THE CACHE**:
-
-- Clear your mason cache
-    ```sh
-    rm -rf /opt/rt4/var/mason_data/obj/*
-    ```
-Befor you start your instance of RT.
-
-### Lanes
-Under _lanes_ every lane within the Kanban is defined. You can easily add or remove custom lanes. A lane is defined by the following object:
-```javascript
-{
-    "Name": XXX,
-    "Query": XXX,
-    "Change": {YYY: XXX, YYY: XXX},
-    "timeOffset": XXX
-    "CallOnEnter": XXX
-}
+```sh
+perl Makefile.PL
+make
+sudo make install
 ```
 
-* `name` The Name displayed.
-* `Query` The actuall `query` used to get the tickets. This `query` is limited by some factors:
-    * Every field within a ticket can be accessed.
-    * Only `queries` that are allowed within the `REST 1.0` inteface of RT can be used. 
-    * The query is translated into a javascript function that is used to sort tickets within the javascript context. At the time beeing, this are the only commands that are supported: 
-        ```
-        AND, OR, NOT, =, <, <=, >, >=, !=, <>
-        ```
-* `Change` One or more fields of the ticket that should be changed when the ticket is moved into this column. For Example `{"Status": "resolved"}` would change the tickets `Status` to the value `resolved`.    
-  NOTE: After the changes the Ticket should match the query. 
-* `timeOffset` (_optional_) Time messured in days. This is usfull if you want a query using the Date. Within any `query` the string `{{=it.Date}}` will be replaced with `the current Date - timeOffSet`. On default this value is `5`. 
-* `CallOnEnter` (_optional_) A javascript function that is called when a ticket is moved into this column. It has access to the ticket and has to return an array of strings. Each string should be the name of an field that has to be updated in the remote DataBase. This can be used for complicated setups to inforce that the ticket actually matches the query.
+The installer copies files into `/opt/rt6/local/plugins/RT-Extension-KANBAN/`.
 
+### 2 — Activate the plugin
 
-### Keywords
-Currently there are two template variables used. These are replaced before a value (for example a query) is evaluated:
+Add to `/opt/rt6/etc/RT_SiteConfig.pm`:
 
-- `{{=it.Date}}` is replaced with the current date minus `timeOffSet` days. In the above example the `Resolved` lane would only hold tickets that are less than a week. 
-- `{{=it.CurrentUser}}` is replaced with the username of the `logged in` RT user. This can be used to build a generic configuration shown in the following example. 
-
-### Examples
-
-This example shows a Kanban configuration for a Kanban with 3 lanes: 
-
-* The first lane shows all new and open tickets that are not `taken` or that are owned by the current user. 
-
-* The second lane shows all stalled tickets that are owned by the current user. 
-
-* The Last lane shows all resolved tickets with a maximum age of 2 days that are owned by any user.
-
-```javascript
-{
-  "lanes":[
-    {
-      "Name": "New Open",
-      "Change": {"Status": "open"},
-      "Query": "(Status='open' OR Status='new') AND (Owner='Nobody' OR Owner='{{=it.CurrentUser}}')"
-    },
-    {
-      "Name": "Stalled",
-      "Change": {"Status": "stalled"},
-      "Query": "(Status='stalled') AND (Owner='{{=it.CurrentUser}}')"
-    },
-    {
-      "Name": "Resolved",
-      "Change": {"Status": "rejected"},
-      "Query": "(Status='resolved') AND (LastUpdated > '{{=it.Date}}')",
-      "timeOffSet":2
-    }
-  ]
-}
-```  
-
-The following example defines two Kanbans. The first one features a lane `IMPORTANT` that contains only tickets with a Priority that is at least 100. Every ticket that is moved into this lane will get at least a priority of 100. Also whenever a ticket is dropped, the user is informed with 'hello world'. While the `alert('hello world')` can be removed it shows how the interface can be used with javascript code.
-
-The second Kanban features a lane with open/new tickets that have no owner. Also there are two additional lanes for the user `foo` and `bar`. If a ticket is moved into `foo` the owner is changed to `foo`. The same happens with the `bar` lane.
-
+```perl
+Plugin('RT::Extension::KANBAN');
 ```
+
+### 3 — Clear the Mason cache and restart
+
+```sh
+sudo rm -rf /opt/rt6/var/mason_data/obj/*
+sudo systemctl restart apache2    # or nginx / your web server
+```
+
+### 4 — Add the Kanban element to a dashboard
+
+In RT → **Tools → Dashboard → Edit** add the **Kanban** element to any dashboard column.
+
+---
+
+## Configuration
+
+Configuration lives in `/opt/rt6/etc/RT_SiteConfig.pm`.
+
+### Defining Kanban boards
+
+```perl
 Set( %KanbanConfigs, (
-important => q(
+  MyBoard => q(
+  {
+    "lanes": [
+      {
+        "Name":   "New / Open",
+        "Change": {"Status": "open"},
+        "Query":  "(Status='open' OR Status='new')"
+      },
+      {
+        "Name":   "Stalled",
+        "Change": {"Status": "stalled"},
+        "Query":  "(Status='stalled') AND (Owner='{{=it.CurrentUser}}')"
+      },
+      {
+        "Name":       "Resolved",
+        "Change":     {"Status": "resolved"},
+        "Query":      "(Status='resolved') AND (LastUpdated > '{{=it.Date}}')",
+        "timeOffset": 7
+      }
+    ]
+  })
+));
+```
+
+Always clear the Mason cache after changing `%KanbanConfigs`.
+
+#### Lane fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `Name` | yes | Column header text |
+| `Query` | yes | RT search query for tickets in this lane. Supports `AND`, `OR`, `NOT`, `=`, `!=`, `<`, `<=`, `>`, `>=` |
+| `Change` | no | Ticket fields to update when a ticket is dropped into this lane, e.g. `{"Status": "open"}` |
+| `timeOffset` | no | Days subtracted from today when expanding `{{=it.Date}}`. Default: `5` |
+| `CallOnEnter` | no | JavaScript function body called on drop; receives `ticket`; must return an array of field names to save |
+
+#### Template variables
+
+| Variable | Replaced with |
+|----------|--------------|
+| `{{=it.Date}}` | Today's date minus `timeOffset` days (ISO format) |
+| `{{=it.CurrentUser}}` | The logged-in RT username |
+
+### Limiting boards per user
+
+```perl
+# Available to all users by default
+Set(@KanbanDefault, "MyBoard", "OtherBoard");
+
+# Override for a specific user (replaces @KanbanDefault for that user)
+Set(@Kanban_alice, "MyBoard");
+```
+
+### Read-only mode per user
+
+```perl
+Set($KanbanReadOnly_alice, 1);
+```
+
+### Truncate long creator names
+
+```perl
+Set($cutCreatorName, 12);   # default: 10
+```
+
+---
+
+## WebSocket Live Updates
+
+The WebSocket server (`bin/rt-kanban-websocket`) subscribes to a Redis pub/sub channel and pushes ticket-update events to all connected browser tabs in real time.
+
+### How it works
+
+```
+RT (Perl) ──publishes ticket ID──► Redis channel "rt-ticket-activity"
+                                        │
+                          rt-kanban-websocket (Mojolicious)
+                                        │
+                    ◄── JSON push ──────┴──── all connected browsers
+```
+
+RT publishes a ticket ID to Redis whenever a ticket changes. The WebSocket server debounces rapid successive events (200 ms window), then broadcasts `{ "updateTicket": { "id": "42", "sequence": N } }` to every authenticated client. Each browser tab fetches the updated ticket data via REST 2.0 and re-renders only the affected card.
+
+### Prerequisites
+
+Install the required Perl modules:
+
+```sh
+sudo cpanm Mojolicious Mojo::Redis
+# or
+sudo cpanm --installdeps /opt/rt6/local/plugins/RT-Extension-KANBAN/
+```
+
+Redis must be running and accessible:
+
+```sh
+sudo systemctl enable --now redis
+redis-cli ping   # should return PONG
+```
+
+### Configure the WebSocket server
+
+Copy and edit the configuration file:
+
+```sh
+sudo cp /opt/rt6/local/plugins/RT-Extension-KANBAN/etc/rt-kanban-websocket.conf \
+        /opt/rt6/local/plugins/RT-Extension-KANBAN/etc/rt-kanban-websocket.conf
+```
+
+Edit `/opt/rt6/local/plugins/RT-Extension-KANBAN/etc/rt-kanban-websocket.conf`:
+
+```perl
 {
-    "lanes":[
-    {
-      "Name": "New Open",
-      "Change": {"Status": "open"},
-      "Query": "(Status='open' OR Status='new') AND Priority<100"
-    },
-    {
-      "Name": "IMPORTANT",
-      "Change": {"Status": "open"},
-      "CallOnEnter": "{
-            if (ticket.Priority < 100){
-                ticket.Priority = 100;
-            }
-            alert('hello world');
-            return [];
-        }",
-      "Query": "(Status='open' OR Status='new') AND Priority >=100"
-    },
-    {
-      "Name": "Resolved",
-      "Change": {"Status": "resolved"},
-      "Query": "(Status='resolved') AND (Resolved > '{{=it.Date}}')",
-      "timeOffSet":2
+  # Redis connection URL
+  redis_url => 'redis://localhost',
+
+  # Pub/sub channel — must match the channel in KANBAN.pm
+  channel   => 'rt-ticket-activity',
+
+  # Base URL of your RT instance (no trailing slash)
+  rt_url    => 'https://rt.example.com',
+
+  # Cookie domain — must match your RT domain
+  rt_domain => 'rt.example.com',
+
+  rt_path   => '/',
+
+  # REST 2.0 endpoint used to validate session cookies.
+  # Any ticket that exists works; use ticket 1 or another permanent ticket.
+  auth_probe_url => 'https://rt.example.com/REST/2.0/ticket/1',
+
+  log_level => 'info',   # debug | info | warn | error | fatal
+}
+```
+
+### Install and start the systemd service
+
+```sh
+sudo cp /opt/rt6/local/plugins/RT-Extension-KANBAN/etc/rt-kanban-websocket.service \
+        /etc/systemd/system/rt-kanban-websocket.service
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now rt-kanban-websocket
+
+# Verify
+sudo systemctl status rt-kanban-websocket
+journalctl -u rt-kanban-websocket -f
+```
+
+The service runs as `www-data` on port **5000** by default. Adjust `User`, `Group`, and the `-l http://*:5000` listen address in the service file to match your environment.
+
+### Reverse proxy setup (recommended)
+
+Expose the WebSocket server under the same origin as RT so the browser can connect without CORS issues and the session cookie is forwarded automatically.
+
+#### Nginx
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name rt.example.com;
+
+    # ... your SSL certificate directives ...
+
+    # RT application
+    location / {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
     }
-  ]
-}),
-distributeTickets => q(
-{
-    "lanes":[
-    {
-      "Name": "New Open",
-      "Change": {"Status": "open"},
-      "Query": "(Status='open' OR Status='new') AND (Owner = 'Nobody')"
-    },
-    {
-      "Name": "foo",
-      "Change": {"Owner": "foo"},
-      "Query": "(Status != 'Resolved' AND Status != 'Rejected' AND Owner = 'foo')"
-    },
-    {
-      "Name": "bar",
-      "Change": {"Owner": "bar"},
-      "Query": "(Status != 'Resolved' AND Status != 'Rejected' AND Owner = 'bar')"
+
+    # WebSocket server — same origin, different path
+    location /websocket {
+        proxy_pass             http://127.0.0.1:5000;
+        proxy_http_version     1.1;
+        proxy_set_header       Upgrade    $http_upgrade;
+        proxy_set_header       Connection "upgrade";
+        proxy_set_header       Host       $host;
+        proxy_set_header       X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout     600s;
+        proxy_send_timeout     600s;
     }
-  ]
-})));
-
+}
 ```
 
+#### Apache (mod_proxy_wstunnel)
 
-## Kanban Userspecific configuration
-### Limit available Kanbans
-Since you can configure multiple Kanbans which might not be usefull for all users. This section shows you how to limit the available Kanban(s) per user.
+```apache
+<VirtualHost *:443>
+    ServerName rt.example.com
 
-The Kanbans available to the user can be limited with the options `@KanbanDefault` and `@Kanban_USERNAME`.
-  * `@KanbanDefault` needs an Array of KanbanNames. Those are the Kanbans that are available to all users. (Unless a `@Kanban_USERNAME` is defined)
-  * `@Kanban_USERNAME` is exactly like `@KanbanDefault` but only workes for a single user. `USERNAME` must be replaced with an existing RT-user for whom this Kanban is configured. 
-  * This options can also be used to define the order of the Kanbans shown in the drop down menu.
+    # ... SSL directives ...
 
-Example:
-```
-Set(@Kanban_FooBar, "KanbanNameX", "KanbanNameY");
-```
+    # RT application
+    ProxyPass        /  http://127.0.0.1:8080/
+    ProxyPassReverse /  http://127.0.0.1:8080/
 
-### Read Only
-`KanbanReadOnly__USERNAME_` sets a user to read only. This has nothing to do with any RT user setting. If this option is set to `true` it alters the view for tickets in a way that no more userinput is possible (only exception is moving and dropping the ticket).
+    # WebSocket server
+    ProxyPass        /websocket  ws://127.0.0.1:5000/websocket
+    ProxyPassReverse /websocket  ws://127.0.0.1:5000/websocket
+</VirtualHost>
 
-Example:
-```
-Set( $KanbanReadOnly_ClientX, 1)
+# Required modules: mod_proxy, mod_proxy_http, mod_proxy_wstunnel
 ```
 
-### cutCreatorName
-`$cutCreatorName` Beware of long creator names as they would lead to a broken Kanban-view. Therfore the creator names are cut after 10 characters. This option can change the number of displayed characters.
+With a reverse proxy in place the Kanban JavaScript connects to `wss://rt.example.com/websocket` automatically — no extra RT configuration is needed.
 
-Example:
+### Without a reverse proxy (alternative)
+
+If you run the WebSocket server on a different port without a reverse proxy, tell RT which port to use:
+
+```perl
+# /opt/rt6/etc/RT_SiteConfig.pm
+Set($WebsocketPort, "5000");
 ```
-Set( $cutCreatorName, 12)
+
+The Kanban JavaScript will then connect to `wss://rt.example.com:5000/websocket`.  
+Both RT and the WebSocket server **must** be on the same domain so the browser forwards the session cookie.
+
+Clear the Mason cache after any change to `$WebsocketPort`.
+
+### Quick test
+
+After starting the service, open the debug console in a browser while logged in to RT:
+
+```
+https://rt.example.com/websocket
 ```
 
+The page shows a live WebSocket connection log with all incoming events.
 
-## Kanban WebSocket configuration
+---
 
-By default the WebSocket used by the Kanban-view connects to the same origin which means it will use WSS 
-when you are using HTTPS. This will require a reverse-proxy setup that maps 
+## How RT publishes ticket changes
 
-* '/' to the RT webserver and 
-* '/webserver' to the RT::WS webserver.
+The extension hooks into RT's callback system. Whenever a ticket is created or updated, RT publishes the ticket ID to the configured Redis channel. No changes to RT core are required — the hook lives in:
 
-However, if you don't want to use a reverse-proxy setup, you can set:
+```
+local/plugins/RT-Extension-KANBAN/lib/RT/Extension/KANBAN.pm
+```
 
-    Set( $WebsocketPort , "5000");
+---
 
-With this variable set, you still need to have both webservers on the same domain since rt-coreExtension-websocket 
-shares the session cookie with request tracker.
-
-NOTE: Whenever you make changes to the $WebsocketPort setting **CLEAR THE CACHE**:
-
-- Clear your mason cache
-    ```sh
-    rm -rf /opt/rt4/var/mason_data/obj/*
-    ```
-
-# USAGE
-
-## Summary
-Once you are subscribed to the WS you will receive updates every time a Ticket in RT is changed.
-
-# AUTHOR
+## Author
 
 - Paul Seitz <paul.m.seitz@gmail.com>
 - Joachim Schiele <js@lastlog.de>
 
-# BUGS
+## Bugs
 
-All bugs should be reported to our BUG-tracker at: 
+Please report bugs at <https://github.com/nixcloud/rt-extension-kanban/issues>.
 
-* <https://github.com/nixcloud/rt-extension-kanban>
+## Thanks
 
-# THANKS
-* [LiHAS Stuttgart](http://www.lihas.de/) for sponsoring this work
-* [Bob Cravens](http://bobcravens.com/) for his kanban example and letting us use it
-* Christian Loos <cloos@netcologne.de> for his help with RT
-* Shawn Moore <shawn@bestpractical.com> for his help with RT
-* Jim Brandt <jbrandt@bestpractical.com> for his help with RT
+- [LiHAS Stuttgart](http://www.lihas.de/) for sponsoring this work
+- [Bob Cravens](http://bobcravens.com/) for his original Kanban example
+- Christian Loos <cloos@netcologne.de>, Shawn Moore, Jim Brandt — for RT guidance
 
-# LICENSE AND COPYRIGHT
+## License
 
-This software is Copyright (c) 2016 by Joachim Schiele/Paul Seitz
-
-This is free software, licensed under:
-
-The GNU General Public License, Version 2, June 1991
+Copyright (c) 2016 Joachim Schiele / Paul Seitz.  
+Licensed under the **GNU General Public License, Version 2** (GPL-2.0).

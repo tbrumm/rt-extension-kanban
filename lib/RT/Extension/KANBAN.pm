@@ -4,10 +4,12 @@ use 5.010001;
 
 package RT::Extension::KANBAN;
 
-our $VERSION = '0.1';
+our $VERSION = '0.2';
 
 RT->AddStyleSheets('tasks.css');
 
+# RT 6 ships with jQuery 3.6 — do not re-add jQuery 1.x.
+# jQuery UI was removed from RT core in RT 6; load our own bundled copy.
 RT->AddJavaScript('md5.min.js');
 RT->AddJavaScript('doT.min.js');
 RT->AddJavaScript('jquery-ui.min.js');
@@ -34,8 +36,7 @@ package RT::Ticket;
 
 {
     my $orig = __PACKAGE__->can('Create')
-        or die "It's not RT 4.2.12, you have to patch this RT."
-            ." Read documentation for RT::Extension::RepliesToResolved";
+        or die "RT::Ticket::Create not found — incompatible RT version.";
 
     no warnings qw(redefine);
 
@@ -51,8 +52,7 @@ package RT::Ticket;
 
 {
     my $orig = __PACKAGE__->can('MergeInto')
-        or die "It's not RT 4.2.12, you have to patch this RT."
-            ." Read documentation for RT::Extension::RepliesToResolved";
+        or die "RT::Ticket::MergeInto not found — incompatible RT version.";
 
     no warnings qw(redefine);
 
@@ -76,8 +76,7 @@ package RT::Ticket;
 
 {
     my $orig = __PACKAGE__->can('_Set')
-        or die "It's not RT 4.2.12, you have to patch this RT."
-            ." Read documentation for RT::Extension::RepliesToResolved";
+        or die "RT::Ticket::_Set not found — incompatible RT version.";
 
     no warnings qw(redefine);
 

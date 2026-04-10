@@ -5,7 +5,7 @@ license  'gplv2';
 
 githubmeta('github');
 
-#requires_rt('4.2.4');
+requires_rt('6.0.0');
 
 sign;
 WriteAll;

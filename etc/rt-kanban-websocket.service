@@ -1,0 +1,47 @@
+# =============================================================================
+# rt-kanban-websocket.service — systemd unit for the RT Kanban WebSocket server
+# =============================================================================
+# Installation:
+#   sudo cp etc/rt-kanban-websocket.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now rt-kanban-websocket
+# =============================================================================
+
+[Unit]
+Description=RT Kanban WebSocket push server
+Documentation=https://github.com/nixcloud/rt-extension-kanban
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+
+# --- adjust these paths to match your installation ---
+User=www-data
+Group=www-data
+
+# Path to the WebSocket server script (installed by 'make install')
+ExecStart=/usr/bin/perl \
+  /opt/rt6/local/plugins/RT-Extension-KANBAN/bin/rt-kanban-websocket \
+  daemon -m production -l http://*:5000
+
+# Config file path — edit rt-kanban-websocket.conf first
+Environment=MOJO_CONFIG=/opt/rt6/local/plugins/RT-Extension-KANBAN/etc/rt-kanban-websocket.conf
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/tmp
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5s
+
+# Logging — follow with: journalctl -u rt-kanban-websocket -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rt-kanban-websocket
+
+[Install]
+WantedBy=multi-user.target

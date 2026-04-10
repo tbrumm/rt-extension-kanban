@@ -2,7 +2,7 @@
 
 Adds a Kanban board to [Request Tracker](https://bestpractical.com/request-tracker/) with real-time WebSocket updates, drag-and-drop ticket management, and a fully configurable lane layout.
 
-![Kanban board screenshot](https://github.com/tbrumm/rt-extension-kanban/blob/master/screenshots/Kanban.png)
+![Kanban board screenshot](https://github.com/tbrumm/rt-extension-kanban/blob/master/screenshots/kanban.png)
 
 **Features**
 

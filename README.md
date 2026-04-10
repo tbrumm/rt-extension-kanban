@@ -337,6 +337,10 @@ local/plugins/RT-Extension-KANBAN/lib/RT/Extension/KANBAN.pm
 
 ## Author
 
+- Torsten Brumm <rt.informationen@picturepunxx.de>
+
+## Original Author
+
 - Paul Seitz <paul.m.seitz@gmail.com>
 - Joachim Schiele <js@lastlog.de>
 

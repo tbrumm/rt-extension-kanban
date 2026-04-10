@@ -146,6 +146,8 @@ Any ticket search can be opened as a Kanban board. After running a search in RT,
 
 The Kanban respects the active search query: each lane only shows tickets that match **both** the lane's own query and the search filter. Dragging a ticket between lanes still applies the lane's `Change` fields (e.g. updating Status or Owner) as usual.
 
+![Search Kanban board screenshot]((https://github.com/tbrumm/rt-extension-kanban/blob/master/screenshots/Kanban_Search.png))
+
 The lane configuration (columns, queries, drop actions) is the same as for the dashboard widget and is controlled via `%KanbanConfigs` in `RT_SiteConfig.pm`.
 
 ### Queue-scoped owner dropdown

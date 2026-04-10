@@ -22,6 +22,10 @@ var $ = jQuery;
   let Columns = [];
   let advancedPriority = false;
   const currentUser = "<% $session{'CurrentUser'}->Name %>";
+  // Per-queue owner lists: { "QueueName": ["alice", "bob", ...], ... }
+  const queueOwners = <%$queueOwnersJSON|n%>;
+  // Optional search query passed from Search/Kanban.html — ANDed with each lane query.
+  const extraQuery  = <%$extraQueryJSON|n%>;
   let config = "";
   let wsInstance = null;       // single shared WebSocket — prevents duplicates
   let kanbanInitRunning = false; // guard against concurrent init calls
@@ -72,10 +76,10 @@ var $ = jQuery;
           <span class="fw-semibold">{{=it.Owner}}</span>
 %}else{
           <select onchange="setOwner('{{=it.id}}', this)" title="Owner">
-            <option value="Nobody">Nobody</option>
-% while ( my $user = $users->Next ) {
-            <option value="<% $user->Name %>" {{? it.Owner == "<% $user->Name %>"}}selected="selected"{{?}}><% $user->Name %></option>
-%}
+            <option value="Nobody" {{? it.Owner === 'Nobody'}}selected="selected"{{?}}>Nobody</option>
+            {{~ it.ownerOptions :u }}
+            <option value="{{=u}}" {{? it.Owner === u}}selected="selected"{{?}}>{{=u}}</option>
+            {{~}}
           </select>
 %}
         </div>
@@ -678,6 +682,8 @@ var $ = jQuery;
     ticket['hour']   = Math.floor(ticket['TimeEstimated'] / 60);
     ticket['minute'] = ticket['TimeEstimated'] % 60;
     ticket['Creator'] = String(ticket['Creator']).substring(0, <% $cutCreatorName %>);
+    // Owner dropdown options scoped to the ticket's queue.
+    ticket['ownerOptions'] = queueOwners[ticket['Queue']] || [];
   }
 
   function updateTicketPosition(ticket) {
@@ -801,7 +807,12 @@ var $ = jQuery;
   // Load tickets for all lanes using REST 2.0 search endpoint.
   function initView() {
     for (let i = 0; i < Columns.length; i++) {
-      const query   = encodeURIComponent(getQuery(Columns[i]['Query'], Columns[i].timeOffSet));
+      let laneQuery = getQuery(Columns[i]['Query'], Columns[i].timeOffSet);
+      // When called from Search/Kanban, restrict to the active search result set.
+      if (extraQuery) {
+        laneQuery = '(' + laneQuery + ') AND (' + extraQuery + ')';
+      }
+      const query   = encodeURIComponent(laneQuery);
       const url     = REST2_BASE + "/tickets?query=" + query
                       + "&orderby=-Priority"
                       + "&fields=" + encodeURIComponent(REST2_FIELDS)
@@ -1032,9 +1043,32 @@ var $ = jQuery;
 </&>
 
 <%INIT>
-my $users = RT::Users->new($session{'CurrentUser'});
-$users->LimitToPrivileged;
+# Build a per-queue map of users who may own tickets in that queue.
+# The JS owner dropdown uses this so only relevant users are shown per ticket.
+my %queueOwners;  # queue_name => [ username, ... ]
+{
+    my $queues = RT::Queues->new( $session{'CurrentUser'} );
+    $queues->UnLimit;
+    while ( my $queue = $queues->Next ) {
+        my $qUsers = RT::Users->new( $session{'CurrentUser'} );
+        $qUsers->WhoHaveRight(
+            Right             => 'OwnTicket',
+            Object            => $queue,
+            IncludeSuperusers => 1,
+        );
+        my @names;
+        while ( my $u = $qUsers->Next ) {
+            push @names, $u->Name;
+        }
+        $queueOwners{ $queue->Name } = \@names if @names;
+    }
+}
+require JSON;
+my $queueOwnersJSON = JSON::encode_json( \%queueOwners );
 
+# Sanitise ExtraQuery for safe embedding in a JS string literal.
+# JSON::encode_json produces a quoted, escaped JS-safe string.
+my $extraQueryJSON = JSON::encode_json( $ExtraQuery );
 
 # default configuration
 my %KanbanConfigs = (Default => q(
@@ -1098,6 +1132,6 @@ if (RT->Config->Get("cutCreatorName")) {
 
 </%INIT>
 <%ARGS>
-$Name => 'Users'
-
+$Name       => 'Users'
+$ExtraQuery => ''
 </%ARGS>

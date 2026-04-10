@@ -1,0 +1,12 @@
+<& /Elements/Header, Title => loc('Kanban for [_1]', $Query || loc('all tickets')) &>
+<& /Elements/Tabs &>
+
+<& /Elements/Kanban, ExtraQuery => $Query &>
+
+<& /Elements/Footer &>
+
+<%ARGS>
+$Query    => ''
+$Order    => 'DESC'
+$OrderBy  => 'Created'
+</%ARGS>

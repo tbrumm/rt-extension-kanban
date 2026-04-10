@@ -2,7 +2,7 @@
 
 Adds a Kanban board to [Request Tracker](https://bestpractical.com/request-tracker/) with real-time WebSocket updates, drag-and-drop ticket management, and a fully configurable lane layout.
 
-![Kanban board screenshot](https://raw.githubusercontent.com/nixcloud/rt-extension-kanban/master/screenshots/kanban.jpg)
+![Kanban board screenshot](https://github.com/tbrumm/rt-extension-kanban/blob/master/screenshots/kanban.png)
 
 **Features**
 
@@ -145,6 +145,8 @@ Set($cutCreatorName, 12);   # default: 10
 Any ticket search can be opened as a Kanban board. After running a search in RT, the navigation bar shows a **Feeds** menu — select **Kanban** to open the current search results as a board.
 
 The Kanban respects the active search query: each lane only shows tickets that match **both** the lane's own query and the search filter. Dragging a ticket between lanes still applies the lane's `Change` fields (e.g. updating Status or Owner) as usual.
+
+![Search Kanban board screenshot](https://github.com/tbrumm/rt-extension-kanban/blob/master/screenshots/Kanban_Search.png)
 
 The lane configuration (columns, queries, drop actions) is the same as for the dashboard widget and is controlled via `%KanbanConfigs` in `RT_SiteConfig.pm`.
 

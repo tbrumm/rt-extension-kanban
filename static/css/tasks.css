@@ -110,7 +110,7 @@ li.ticket.ui-sortable-helper {
   padding: 0.15rem 0.5rem;
   font-size: 0.78rem;
   min-height: 1.8rem;
-  border-bottom: 1px solid rgba(0,0,0,0.07);
+  border-bottom: 1px solid var(--bs-border-color);
 }
 
 .ticket-owner-bar select {
@@ -154,7 +154,7 @@ li.ticket.ui-sortable-helper {
   align-items: center;
   justify-content: space-between;
   padding: 0.2rem 0.6rem;
-  background-color: var(--bs-light);
+  background-color: var(--bs-secondary-bg); /* --bs-light stays light even in dark mode */
   font-size: 0.75rem;
   color: var(--bs-secondary-color);
 }
@@ -178,7 +178,7 @@ li.ticket.ui-sortable-helper {
 
 .numedit:focus {
   outline: 1px solid var(--bs-primary);
-  background: white;
+  background: var(--bs-body-bg);
 }
 
 /* ---------------------------------------------------------
@@ -268,7 +268,7 @@ li.ticket.ui-sortable-helper {
   align-items: center;
   gap: 0.5rem;
   padding: 0.6rem 0.75rem;
-  background-color: var(--bs-light);
+  background-color: var(--bs-secondary-bg); /* --bs-light stays light even in dark mode */
   border-bottom: 1px solid var(--bs-border-color);
   border-radius: var(--bs-border-radius) var(--bs-border-radius) 0 0;
   margin-bottom: 0.25rem;
@@ -317,4 +317,38 @@ li.ticket.ui-sortable-helper {
 #main.kanban-fullscreen ul.tasks {
   overflow-y: auto;
   max-height: calc(100vh - 140px);
+}
+
+/* ---------------------------------------------------------
+   Dark Mode overrides
+   RT 6 / Bootstrap 5.3 sets data-bs-theme="dark" on <html>.
+   Most colours already use dark-mode-aware --bs-* variables;
+   these rules fix the remaining edge cases.
+   --------------------------------------------------------- */
+[data-bs-theme="dark"] .ticket > .card:hover {
+  /* Light-mode shadow (rgba black 12%) is invisible on dark bg */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5) !important;
+}
+
+[data-bs-theme="dark"] li.ticket.ui-sortable-helper {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55) !important;
+}
+
+/* jQuery UI autocomplete in dark mode */
+[data-bs-theme="dark"] .ui-autocomplete {
+  background: var(--bs-body-bg);
+  color: var(--bs-body-color);
+}
+
+[data-bs-theme="dark"] .ui-menu-item .ui-menu-item-wrapper {
+  color: var(--bs-body-color);
+}
+
+/* Native <select> arrow colour fix for dark mode:
+   WebKit/Blink renders the arrow using the element's color property.
+   The owner-bar select inherits an explicit inline color set by JS,
+   so this only needs to cover the filter dropdowns in the toolbar. */
+[data-bs-theme="dark"] #kanban-toolbar select.form-select {
+  color: var(--bs-body-color);
+  background-color: var(--bs-form-select-bg, var(--bs-body-bg));
 }

@@ -556,13 +556,17 @@ var $ = jQuery;
     return ticket;
   }
 
-  // Fields requested from REST 2.0 search / single-ticket endpoints
+  // Fields requested from REST 2.0 search / single-ticket endpoints.
+  // The fields[X]=Name,id params ask RT to include the Name sub-field in the
+  // hypertext objects for Owner/Creator/Queue so extractName() can resolve the
+  // human-readable name without an extra round-trip.
   const REST2_FIELDS = [
     'id', 'Subject', 'Status', 'Priority', 'InitialPriority', 'FinalPriority',
     'Queue', 'Owner', 'Creator', 'Requestors', 'Cc', 'AdminCc',
     'TimeEstimated', 'TimeWorked', 'TimeLeft',
     'Created', 'Starts', 'Started', 'Due', 'Resolved', 'Told', 'LastUpdated'
   ].join(',');
+  const REST2_SUBFIELDS = '&fields%5BOwner%5D=Name%2Cid&fields%5BCreator%5D=Name%2Cid&fields%5BQueue%5D=Name%2Cid';
 
   const REST2_BASE = "<%RT->Config->Get('WebPath')%>/REST/2.0";
 
@@ -627,7 +631,7 @@ var $ = jQuery;
   function getAndUpdateTicket(id) {
     (function(ticketId) {
       $.ajax({
-        url: REST2_BASE + "/ticket/" + ticketId + "?fields=" + REST2_FIELDS,
+        url: REST2_BASE + "/ticket/" + ticketId + "?fields=" + REST2_FIELDS + REST2_SUBFIELDS,
         type: 'GET',
         dataType: 'json',
         success: function(data) {
@@ -848,6 +852,7 @@ var $ = jQuery;
       const url     = REST2_BASE + "/tickets?query=" + query
                       + "&orderby=-Priority"
                       + "&fields=" + encodeURIComponent(REST2_FIELDS)
+                      + REST2_SUBFIELDS
                       + "&per_page=500";
       (function(lane) {
         $.ajax({
@@ -1082,17 +1087,27 @@ my %queueOwners;  # queue_name => [ username, ... ]
     my $queues = RT::Queues->new( $session{'CurrentUser'} );
     $queues->UnLimit;
     while ( my $queue = $queues->Next ) {
-        my $qUsers = RT::Users->new( $session{'CurrentUser'} );
+        # Use SystemUser context so that the current user's limited ShowUser
+        # rights do not suppress the result.  Showing who can own tickets in
+        # a queue is not sensitive information for kanban users.
+        my $qUsers = RT::Users->new( RT->SystemUser );
         $qUsers->WhoHaveRight(
-            Right             => 'OwnTicket',
-            Object            => $queue,
-            IncludeSuperusers => 1,
+            Right               => 'OwnTicket',
+            Object              => $queue,
+            IncludeSuperusers   => 1,
+            IncludeSystemRights => 1,
         );
         my @names;
         while ( my $u = $qUsers->Next ) {
             push @names, $u->Name;
         }
-        $queueOwners{ $queue->Name } = \@names if @names;
+        if (@names) {
+            # Index by both queue Name and numeric Id — the REST 2.0 response
+            # returns the Queue as an object; extractName() prefers .Name but
+            # may fall back to the numeric id string if Name is absent.
+            $queueOwners{ $queue->Name } = \@names;
+            $queueOwners{ $queue->Id   } = \@names;
+        }
     }
 }
 require JSON;

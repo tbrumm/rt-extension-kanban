@@ -1,24 +1,20 @@
 <%INIT>
+my $request_path = $HTML::Mason::Commands::r->path_info;
 
-# Add "Kanban" to the search Feeds submenu (same pattern as RT-Extension-ExcelFeed).
-# $Has_Query and $Search_Args are passed by Elements/Tabs when a search is active.
-# PageMenu()->child('more') is the "Feeds" submenu in the search navigation.
+if ( $request_path =~ qr{^/Search/} && ( !$DECODED_ARGS->{Class} || $DECODED_ARGS->{Class} eq 'RT::Tickets' ) ) {
+    my $current_search = $session{"CurrentSearchHash-RT::Tickets"} || $session{"CurrentSearchHash"} || {};
+    my $query = $DECODED_ARGS->{'Query'} || $current_search->{'Query'};
 
-if ( $Has_Query && $Path =~ m{^/Search/} && PageMenu()->child('more') ) {
-    PageMenu()->child('more')->child(
-        'kanban',
-        title       => loc('Kanban'),
-        description => loc('View search results as a Kanban board'),
-        path        => "/Search/Kanban.html$Search_Args",
-        attributes  => {
-            'hx-boost' => 'false',
-        },
-    );
+    if (   $request_path =~ qr{^/Search/Kanban\.html}
+        || ( $request_path !~ qr{^/Search/Simple\.html$} && $query ) )
+    {
+        PageMenu->child(
+            'kanban',
+            title      => loc('Kanban'),
+            path       => '/Search/Kanban.html?'
+                . $m->comp( '/Elements/QueryString', %$current_search, %$DECODED_ARGS ),
+            attributes => { 'hx-boost' => 'false' },
+        );
+    }
 }
-
 </%INIT>
-<%ARGS>
-$Path
-$Search_Args => ''
-$Has_Query   => ''
-</%ARGS>

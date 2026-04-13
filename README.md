@@ -16,6 +16,7 @@ Adds a Kanban board to [Request Tracker](https://bestpractical.com/request-track
 - Fullscreen mode for large monitors
 - Bootstrap 5 / Dark Mode compatible UI (RT 6)
 
+**Demo Video**
 [![Demo](./screenshots/Websocket.png)](./screenshots/RT-Extension-Kanban.mp4)
 
 ---
